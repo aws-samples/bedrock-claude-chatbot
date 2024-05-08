@@ -1,0 +1,1 @@
+{"DynamodbTable": "", "UserId": "", "Bucket_Name": "BUCKET NAME", "max-output-token":2000, "chat-history-loaded-length":10, "bedrock-region":"us-east-1", "load-doc-in-chat-history":true, "AmazonTextract":true, "csv-delimiter":"\t", "document-upload-cache-s3-path":"chatbot_uploads", "AmazonTextract-result-cache":"textract_output"}

@@ -1,0 +1,17 @@
+streamlit
+boto3
+pymupdf
+pandas
+amazon-textract-textractor==1.7.1
+anthropic
+s3fs
+openpyxl
+inflect
+pypdf2
+pytesseract
+python-pptx
+python-docx
+pillow
+openpyxl
+textract
+python-calamine

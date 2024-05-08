@@ -1,0 +1,1 @@
+{"anthropic.claude-3-sonnet": {"input": 0.000003, "output": 0.000015},"anthropic.claude-3-haiku": {"input": 0.00000025, "output": 0.00000125},"anthropic.claude-instant-v1": {"input": 8e-07, "output": 2.4e-06}, "anthropic.claude-v2": {"input": 8e-06, "output": 2.4e-05},"anthropic.claude-v2:1": {"input": 8e-06, "output": 2.4e-05}}
