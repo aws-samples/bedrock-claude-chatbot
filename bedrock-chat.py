@@ -1090,7 +1090,7 @@ def app_sidebar():
         st.metric(label="Bedrock Session Cost", value=f"${round(st.session_state['cost'],2)}") 
         st.write("-----")
         button=st.button("New Chat", type ="primary")
-        models=[ 'claude-3-5-sonnet','claude-3-sonnet','claude-3-haiku','claude-instant-v1','claude-v2:1', 'claude-v2','meta.llama3-1-8b','meta.llama3-1-70b','ai21.jamba']
+        models=[ 'claude-3-5-sonnet','claude-3-sonnet','claude-3-haiku','claude-instant-v1','claude-v2:1', 'claude-v2']
         model=st.selectbox('**Model**', models)
         params={"model":model} 
         user_sess_id=get_session_ids_by_user(DYNAMODB_TABLE, st.session_state['userid'])
