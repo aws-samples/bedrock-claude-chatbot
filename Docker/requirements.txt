@@ -1,0 +1,9 @@
+boto3
+scikit-learn
+plotly
+pandas
+numpy
+seaborn
+matplotlib
+s3fs
+openpyxl

@@ -1,10 +1,11 @@
+packaging
+setuptools
 streamlit
 boto3
 pymupdf
 pandas
 amazon-textract-textractor==1.7.1
 anthropic
-s3fs
 openpyxl
 inflect
 pypdf2
@@ -13,5 +14,7 @@ python-pptx
 python-docx
 pillow
 openpyxl
-textract
+pydantic
 python-calamine
+s3fs
+textract==1.6.3
