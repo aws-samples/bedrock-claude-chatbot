@@ -98,8 +98,6 @@ The application's behavior can be customized by modifying the `config.json` file
 - `input_bucket`: S3 bucket name where the files to be rendered on the screen are stored.
 - `input_file_ext`: comma-seperated file extension names (without ".") for files in the S3 buckets to be rendered on the screen. By default `xlsx` and `csv` are included.
 
-**⚠ NOTE:** If you enabled **Advanced Analytics Feature** make sure the `Bucket_Name` and `document-upload-cache-s3-path` do not point to your main storage path. Since this app will be executing genrated code by the LLM it is paramount to point these paramters to a "sandbox" S3 location to avoid the risk of potentially over-writing files. This case does not apply to the `input_s3_path` and `input_bucket` as only read operations are made to those locations (DO NOT point `input_bucket` to the same bucket as `Bucket_Name`). 
-
 **⚠ IMPORTANT ADVISORY FOR ADVANCED ANALYTICS FEATURE**
 
 When using the **Advanced Analytics Feature**, take the following precautions:
