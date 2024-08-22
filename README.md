@@ -2,7 +2,7 @@
 Bedrock Chat App is a Streamlit application that allows users to interact with the Anthropic Bedrock language model. It provides a conversational interface where users can ask questions, upload documents, and receive responses from the AI assistant.
 
 
-<img src="images/chatbot3.png" width="800"/>
+<img src="images/chatbot4.png" width="1000"/>
 
 READ THE FOLLOWING **PREREQUISITES** CAREFULLY.
 
