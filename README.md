@@ -10,8 +10,9 @@ READ THE FOLLOWING **PREREQUISITES** CAREFULLY.
 
 - **Conversational UI**: The app provides a chat-like interface for seamless interaction with the AI assistant.
 - **Document Upload**: Users can upload various types of documents (PDF, CSV, TXT, PNG, JPG, XLSX, JSON, DOCX, Python scripts etc) to provide context for the AI assistant.
-- **Caching**: Uploaded documents and extracted text are cached in an S3 bucket for improved performance.
-- **Chat History**: The app stores and retrieves chat history from a DynamoDB table, allowing users to continue conversations across sessions.
+- **Caching**: Uploaded documents and extracted text are cached in an S3 bucket for improved performance. This serves as the object storage unit for the application as documents are retrieved and loaded into the model to keep conversation context.
+- **Chat History**: The app stores stores and retrieves chat history (including document metadata) to/from a DynamoDB table, allowing users to continue conversations across sessions.
+- **Session Store**:  The application utilizes DynamoDB to store and manage user and session information, enabling isolated conversations and state tracking for each user interaction.
 - **Model Selection**: Users can select different Anthropic models (Claude-3.5-Sonnet. Claude-3-Sonnet, Claude-3-Haiku, Claude-Instant-V1, Claude-V2, Claude-V2:1) for their queries. It incorporates the Bedrock Converse API providing a standardized model interface.
 - **Cost Tracking**: The application calculates and displays the cost associated with each chat session based on the input and output token counts and the pricing model defined in the `pricing.json` file.
 - **Logging**: The items logged in the DynamoDB table include the user ID, session ID, messages, timestamps,uploaded documents s3 path, input and output token counts. This helps to isolate user engagement statistics and track the various items being logged, as well as attribute the cost per user.
