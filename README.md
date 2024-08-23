@@ -17,6 +17,7 @@ READ THE FOLLOWING **PREREQUISITES** CAREFULLY.
 - **Cost Tracking**: The application calculates and displays the cost associated with each chat session based on the input and output token counts and the pricing model defined in the `pricing.json` file.
 - **Logging**: The items logged in the DynamoDB table include the user ID, session ID, messages, timestamps,uploaded documents s3 path, input and output token counts. This helps to isolate user engagement statistics and track the various items being logged, as well as attribute the cost per user.
 - **Tool Usage**: **`Advanced Data Analytics tool`** for processing and analyzing structured data (CSV, XLX and XLSX format).
+- **Extensible Tool Integration**: This app can be modified to leverage the extensive Domain Specific Language (DSL) knowledge inherent in Large Language Models (LLMs) to implement a wide range of specialized tools. This capability is enhanced by the versatile execution environments provided by Docker containers and AWS Lambda, allowing for dynamic and adaptable implementation of various DSL-based functionalities. This approach enables the system to handle diverse domain-specific tasks efficiently, without the need for hardcoded, specialized modules for each domain.
 
 There are two files of interest.
 1. A Jupyter Notebook that walks you through the ChatBot Implementation cell by cell (Advanced Data Analytics only available in the streamlit chatbot).
