@@ -970,11 +970,11 @@ def function_caller_claude_(params,handler=None):
         for ids,docs in enumerate(params['s3_objects']):
             file_name=docs
             _,extensions=os.path.splitext(file_name)      
-            docs=put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")
-            full_doc_path.append(docs)
+            docs=put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")            
             if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
                 image_path.append(docs)
                 continue
+            full_doc_path.append(docs)
   
     errors, result_string=process_files(full_doc_path) 
     if errors:
