@@ -930,27 +930,28 @@ When providing your respons:
             return answer
     else:
         current_chat,chat_hist=get_chat_history_db(params, CHAT_HISTORY_LENGTH,claude3)
-        if params['upload_doc']:  
-            doc='I have provided documents and/or images.\n'
-            for ids,docs in enumerate(params['upload_doc']):
-                file_name=docs.name
-                _,extensions=os.path.splitext(file_name)
-                docs=put_obj_in_s3_bucket_(docs)
-                full_doc_path.append(docs)
-                if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
-                    image_path.append(docs)
-                    continue
-
-        if params['s3_objects']:  
-            doc='I have provided documents and/or images.\n'
-            for ids,docs in enumerate(params['s3_objects']):
-                file_name=docs
-                _,extensions=os.path.splitext(file_name)
-                docs=put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")
-                full_doc_path.append(docs)
-                if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
-                    image_path.append(docs)
-                    continue
+        if params['upload_doc'] or params['s3_objects']:
+            if params['upload_doc']:  
+                doc='I have provided documents and/or images.\n'
+                for ids,docs in enumerate(params['upload_doc']):
+                    file_name=docs.name
+                    _,extensions=os.path.splitext(file_name)
+                    docs=put_obj_in_s3_bucket_(docs)
+                    full_doc_path.append(docs)
+                    if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
+                        image_path.append(docs)
+                        continue
+    
+            if params['s3_objects']:  
+                doc='I have provided documents and/or images.\n'
+                for ids,docs in enumerate(params['s3_objects']):
+                    file_name=docs
+                    _,extensions=os.path.splitext(file_name)
+                    docs=put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")
+                    full_doc_path.append(docs)
+                    if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
+                        image_path.append(docs)
+                        continue
 
             doc_path = [item for item in full_doc_path if item not in image_path]
             errors, result_string=process_files(doc_path)    
