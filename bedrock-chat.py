@@ -652,7 +652,7 @@ def copy_s3_object(source_uri, dest_bucket, dest_key):
             'Bucket': source_bucket,
             'Key': source_key
         }
-
+        source_key=os.path.basename(source_key)
         # Copy the object
         s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=f"{dest_key}/{source_key}")
 
