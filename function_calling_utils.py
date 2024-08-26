@@ -1060,9 +1060,9 @@ Important:
 - Present calculated statistics and generated visualizations without drawing conclusions
 
 Notes:
+- Take time to think about the code to be generated for the user query
 - Save plots as PNG files in '/tmp' directory
 - Use efficient, well-documented, PEP 8 compliant code
-- Implement error handling and input validation
 - Follow data analysis and visualization best practices
 - Include plots whenever possible
 - Store all results in the 'output' JSON object
