@@ -742,7 +742,7 @@ def get_chat_history_db(params,cutoff,claude3):
                     current_chat.append({'role': 'user', 'content': user})  
                 else:                
                     current_chat.append({'role': 'user', 'content': content})
-            if d['document'] and LOAD_DOC_IN_ALL_CHAT_CONVO: 
+            elif d['document'] and LOAD_DOC_IN_ALL_CHAT_CONVO: 
                 doc='Here is a document showing sample rows:\n'
                 for docs in d['document']:
                     uploads=process_document_types(docs)
