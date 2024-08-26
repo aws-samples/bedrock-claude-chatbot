@@ -566,7 +566,7 @@ def get_chat_history_db(params,cutoff,claude3):
                     }])
                 content.extend([{"text":d['user']}])
                 current_chat.append({'role': 'user', 'content': content})
-            if d['document'] and LOAD_DOC_IN_ALL_CHAT_CONVO:
+            elif d['document'] and LOAD_DOC_IN_ALL_CHAT_CONVO:
                 ### Handle scenario where tool is used for dataset that is out of context for the model context length
                 if 'tool_use_id' in d and d['tool_use_id']:
                     doc='Here are the documents:\n'
