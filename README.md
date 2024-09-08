@@ -128,7 +128,11 @@ If You have a sagemaker Studio Domain already set up, ignore the first item, how
 * [Clone this git repo into studio](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-tasks-git.html)
 * Open a system terminal by clicking on **Amazon SageMaker Studio** and then **System Terminal** as shown in the diagram below
 * <img src="images/studio-new-launcher.png" width="600"/>
-* Navigate into the cloned repository directory using the `cd` command and run the command `pip install -r req.txt --upgrade` to install the needed python libraries.
+* Navigate into the cloned repository directory using the `cd bedrock-claude-chatbot` command and run the following commands to install the application python libraries:
+  - sudo yum update
+  - sudo yum upgrade -y
+  - chmod +x install_package.sh
+  - ./install_package.sh
 * If you decide to use Python Libs for PDF and image processing, this requires tesserect-ocr. Run the following command:
     - sudo rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
     - sudo yum -y update
@@ -141,7 +145,11 @@ If You have a sagemaker Studio Domain already set up, ignore the first item, how
 * [Create a JupyterLab space](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-updated-jl.html)
 * <img src="images/JP-lab.PNG" width="600"/>
 * Open a terminal by clicking **File** -> **New** -> **Terminal**
-* Navigate into the cloned repository directory using the `cd` command and run the command `pip install -r req.txt --upgrade` to install the needed python libraries.
+* Navigate into the cloned repository directory using the `cd bedrock-claude-chatbot` command and run the following commands to install the application python libraries:
+  - sudo apt update
+  - sudo apt upgrade -y
+  - chmod +x install_package.sh
+  - ./install_package.sh
 * If you decide to use Python Libs for PDF and image processing, this requires tesserect-ocr. Run the following command:
     - sudo apt update -y
     - sudo apt-get install tesseract-ocr-all -y
@@ -156,7 +164,7 @@ If You have a sagemaker Studio Domain already set up, ignore the first item, how
 * EC2 [instance profile role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2_instance-profiles.html) has the required permissions to access the services used by this application mentioned above.
 * [Connect to your ec2 instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AccessingInstances.html)
 * Run the appropiate commands to update the ec2 instance (`sudo apt update` and `sudo apt upgrade` -for Ubuntu)
-* Clone this git repo `git clone [github_link]`
+* Clone this git repo `git clone [github_link]` and `cd bedrock-claude-chatbot`
 * Install python3 and pip if not already installed, `sudo apt install python3` and `sudo apt install python3-pip`.
 * If you decide to use Python Libs for PDF and image processing, this requires tesserect-ocr. Run the following command:
     - If using Centos-OS or Amazon-Linux:
@@ -165,8 +173,12 @@ If You have a sagemaker Studio Domain already set up, ignore the first item, how
         - sudo yum install -y tesseract
     - For Ubuntu or Debian:
         - sudo apt-get install tesseract-ocr-all -y
-* Install the dependencies by running the command `sudo pip install -r req.txt --upgrade`
-* Run command `tmux new -s mysession` to create a new session. Then in the new session created `cd` into the **ChatBot** dir and run `python3 -m streamlit run bedrock-chat.py` to start the streamlit app. This allows you to run the Streamlit application in the background and keep it running even if you disconnect from the terminal session.
+* Install the dependencies by running the following commands (use `yum` for Centos-OS or Amazon-Linux):
+  - sudo apt update
+  - sudo apt upgrade -y
+  - chmod +x install_package.sh
+  - ./install_package.sh
+* Run command `tmux new -s mysession` to create a new session. Then in the new session created `cd bedrock-claude-chatbot` into the **ChatBot** dir and run `python3 -m streamlit run bedrock-chat.py` to start the streamlit app. This allows you to run the Streamlit application in the background and keep it running even if you disconnect from the terminal session.
 * Copy the **External URL** link generated and paste in a new browser tab.
 * **⚠ NOTE:** The generated link is not secure! For [additional guidance](https://github.com/aws-samples/deploy-streamlit-app). 
 To stop the `tmux` session, in your ec2 terminal Press `Ctrl+b`, then `d` to detach. to kill the session, run `tmux kill-session -t mysession`
