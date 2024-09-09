@@ -150,6 +150,9 @@ If You have a sagemaker Studio Domain already set up, ignore the first item, how
   - sudo apt upgrade -y
   - chmod +x install_package.sh
   - ./install_package.sh
+  - **NOTE**: If you run into this error `ERROR: Could not install packages due to an OSError: [Errno 2] No such file or directory: /opt/conda/lib/python3.10/site-packages/fsspec-2023.6.0.dist-info/METADATA`, I solved it by deleting the `fsspec` package by running the following command (this is due to have two versions of `fsspec` install 2023* and 2024*):
+      - `rm /opt/conda/lib/python3.10/site-packages/fsspec-2023.6.0.dist-info -rdf`
+      - pip install -U fsspec # fsspec 2024.9.0 should already be installed.
 * If you decide to use Python Libs for PDF and image processing, this requires tesserect-ocr. Run the following command:
     - sudo apt update -y
     - sudo apt-get install tesseract-ocr-all -y
