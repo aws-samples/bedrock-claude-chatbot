@@ -706,7 +706,7 @@ def bedrock_streemer(params,response, handler):
     return text
 
 def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_path=None, handler=None):
-  
+    chat_history_copy = chat_history[:]
     content=[]
     if image_path:       
         if not isinstance(image_path, list):
@@ -731,10 +731,10 @@ def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_pa
     content.append({       
         "text": prompt
             })
-    chat_history.append({"role": "user",
+    chat_history_copy.append({"role": "user",
             "content": content})
     system_message=[{"text":system_message}]
-    response = bedrock_runtime.converse_stream(messages=chat_history, modelId=model_id,inferenceConfig={"maxTokens": 2000, "temperature": 0.5,},system=system_message)
+    response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,inferenceConfig={"maxTokens": 2000, "temperature": 0.5,},system=system_message)
     answer=bedrock_streemer(params,response, handler) 
     return answer
 
