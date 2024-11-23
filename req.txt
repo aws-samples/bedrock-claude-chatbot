@@ -5,7 +5,6 @@ boto3
 pymupdf
 pandas
 amazon-textract-textractor==1.7.1
-anthropic
 openpyxl
 inflect
 pypdf2
