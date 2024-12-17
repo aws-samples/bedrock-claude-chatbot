@@ -380,7 +380,7 @@ def exract_pdf_text_aws(file):
             return text
         else:
             
-            extractor = Textractor(region_name="us-east-1")
+            extractor = Textractor(region_name=REGION)
             # Asynchronous call, you will experience some wait time. Try caching results for better experience
             if "pdf" in ext:
                 print("Asynchronous call, you may experience some wait time.")
