@@ -147,7 +147,7 @@ By following these guidelines, you mitigate the potential risk of unintended dat
 
 If You have a Sagemaker AI Studio Domain already set up, ignore the first item, however, item 2 is required.
 * [Set Up SageMaker Studio](https://docs.aws.amazon.com/sagemaker/latest/dg/onboard-quick-start.html) 
-* SageMaker execution role should have access to interact with [Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/api-setup.html), [S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html) and optionally [Textract](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AmazonTextractFullAccess.html) and [DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/iam-policy-specific-table-indexes.html) and [AWS Lambda](https://docs.aws.amazon.com/lambda/latest/dg/access-control-identity-based.html) if these services are used.
+* SageMaker execution role should have access to interact with [Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/api-setup.html), [S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html) and optionally [Textract](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AmazonTextractFullAccess.html) and [DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/iam-policy-specific-table-indexes.html), [AWS Lambda](https://docs.aws.amazon.com/lambda/latest/dg/access-control-identity-based.html) and [Amazon Athena](https://docs.aws.amazon.com/athena/latest/ug/managed-policies.html)if these services are used.
 
 ### On SageMaker AI Studio JupyterLab:
 * [Create a JupyterLab space](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-updated-jl.html)
