@@ -1,0 +1,14 @@
+{    
+    "sonnet-4": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "sonnet-3.7": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+    "opus-4": "anthropic.claude-opus-4-20250514-v1:0",
+    "sonnet-3.5-v2": "anthropic.claude-3-5-sonnet-20241022-v2:0",    
+    "haiku-3.5": "anthropic.claude-3-5-haiku-20241022-v1:0",
+    "deepseek": "deepseek.r1-v1:0",
+    "nova-pro": "amazon.nova-pro-v1:0",
+    "nova-lite": "amazon.nova-lite-v1:0",
+    "nova-micro": "amazon.nova-micro-v1:0",
+    "nova-premier": "amazon.nova-premier-v1:0",
+    "meta-maverick": "meta.llama4-maverick-17b-instruct-v1:0",
+    "meta-scout": "meta.llama4-scout-17b-instruct-v1:0"
+}

@@ -10,9 +10,10 @@ import re
 import openpyxl
 from python_calamine import CalamineWorkbook
 from openpyxl.cell import Cell
+import plotly.io as pio
 from openpyxl.worksheet.cell_range import CellRange
 from docx.table import _Cell
-from boto3.dynamodb.conditions import Key 
+from boto3.dynamodb.conditions import Key
 from pptx import Presentation
 from botocore.exceptions import ClientError
 from textractor import Textractor
@@ -21,7 +22,7 @@ from textractor.data.text_linearization_config import TextLinearizationConfig
 import pytesseract
 from PIL import Image
 import PyPDF2
-import chardet 
+import chardet
 from docx import Document as DocxDocument
 from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
@@ -30,44 +31,55 @@ from docx.text.paragraph import Paragraph
 from docx.table import Table as DocxTable
 import concurrent.futures
 from functools import partial
-import textract
 import random
-
+from utils import function_calling_utils
+from urllib.parse import urlparse
+import plotly.graph_objects as go
+import numpy as np
+import base64
 config = Config(
-    read_timeout=600, # Read timeout parameter
-    retries = dict(
-        max_attempts = 10 ## Handle retries
+    read_timeout=600,  # Read timeout parameter
+    retries=dict(
+        max_attempts=10  # Handle retries
     )
 )
-import function_calling_utils
+
 st.set_page_config(initial_sidebar_state="auto")
-# Read credentials
+
+# Read app configurations
 with open('config.json','r',encoding='utf-8') as f:
     config_file = json.load(f)
 # pricing info
 with open('pricing.json','r',encoding='utf-8') as f:
     pricing_file = json.load(f)
+# Bedrock Model info
+with open('model_id.json','r',encoding='utf-8') as f:
+    model_info = json.load(f)
 
-S3 = boto3.client('s3')
-DYNAMODB  = boto3.resource('dynamodb')
+DYNAMODB = boto3.resource('dynamodb')
 COGNITO = boto3.client('cognito-idp')
+S3 = boto3.client('s3')
 LOCAL_CHAT_FILE_NAME = "chat-history.json"
-DYNAMODB_TABLE=config_file["DynamodbTable"]
-BUCKET=config_file["Bucket_Name"]
-OUTPUT_TOKEN=config_file["max-output-token"]
-S3_DOC_CACHE_PATH=config_file["document-upload-cache-s3-path"]
-TEXTRACT_RESULT_CACHE_PATH=config_file["AmazonTextract-result-cache"]
-LOAD_DOC_IN_ALL_CHAT_CONVO=config_file["load-doc-in-chat-history"]
-CHAT_HISTORY_LENGTH=config_file["chat-history-loaded-length"]
-DYNAMODB_USER=config_file["UserId"]
-REGION=config_file["bedrock-region"]
-USE_TEXTRACT=config_file["AmazonTextract"]
-CSV_SEPERATOR=config_file["csv-delimiter"]
-INPUT_BUCKET=config_file["input_bucket"]
-INPUT_S3_PATH=config_file["input_s3_path"]
-INPUT_EXT=tuple(f".{x}" for x in config_file["input_file_ext"].split(','))
+DYNAMODB_TABLE = config_file["DynamodbTable"]
+BUCKET = config_file["Bucket_Name"]
+OUTPUT_TOKEN = config_file["max-output-token"]
+S3_DOC_CACHE_PATH = config_file["document-upload-cache-s3-path"]
+TEXTRACT_RESULT_CACHE_PATH = config_file["AmazonTextract-result-cache"]
+LOAD_DOC_IN_ALL_CHAT_CONVO = config_file["load-doc-in-chat-history"]
+CHAT_HISTORY_LENGTH = config_file["chat-history-loaded-length"]
+DYNAMODB_USER = config_file["UserId"]
+REGION = config_file["region"]
+USE_TEXTRACT = config_file["AmazonTextract"]
+CSV_SEPERATOR = config_file["csv-delimiter"]
+INPUT_BUCKET = config_file["input_bucket"]
+INPUT_S3_PATH = config_file["input_s3_path"]
+INPUT_EXT = tuple(f".{x}" for x in config_file["input_file_ext"].split(','))
+MODEL_DISPLAY_NAME = list(model_info.keys())
+HYBRID_MODELS = ["sonnet-3.7", "sonnet-4", "opus-4"]  # populate with list of hybrid reasoning models on Bedrock
+NON_VISION_MODELS = ["deepseek", "haiku-3.5", "nova-micro"]  # populate with list of models not supporting image input on Bedrock
+NON_TOOL_SUPPORTING_MODELS = ["deepseek", "meta-scout", "meta-maverick"]  # populate with list of models not supporting tool calling on Bedrock
 
-bedrock_runtime = boto3.client(service_name='bedrock-runtime',region_name=REGION,config=config)
+bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name=REGION, config=config)
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
@@ -87,10 +99,14 @@ if 'userid' not in st.session_state:
     st.session_state['userid']= config_file["UserId"]
 if 'cost' not in st.session_state:
     st.session_state['cost'] = 0
+if 'reasoning_mode' not in st.session_state:
+    st.session_state['reasoning_mode'] = False  # Only activated when user selects anthropic 3.7 and toggles on thinking
+if 'athena-session' not in st.session_state:
+    st.session_state['athena-session'] = ""
 
 def get_object_with_retry(bucket, key):
-    max_retries=5
-    retries = 0   
+    max_retries = 5
+    retries = 0
     backoff_base = 2
     max_backoff = 3  # Maximum backoff time in seconds
     s3 = boto3.client('s3')
@@ -102,8 +118,8 @@ def get_object_with_retry(bucket, key):
             error_code = e.response['Error']['Code']
             if error_code == 'DecryptionFailureException':
                 sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
-                print(f"Decryption failed, retrying in {sleep_time} seconds...")                
-                time.sleep(sleep_time)               
+                print(f"Decryption failed, retrying in {sleep_time} seconds...")
+                time.sleep(sleep_time)
                 retries += 1
             elif e.response['Error']['Code'] == 'ModelStreamErrorException':
                 if retries < max_retries:
@@ -117,6 +133,19 @@ def get_object_with_retry(bucket, key):
     # If we reach this point, it means the maximum number of retries has been exceeded
     raise Exception(f"Failed to get object {key} from bucket {bucket} after {max_retries} retries.")
 
+def decode_numpy_array(obj):
+    if isinstance(obj, dict) and 'dtype' in obj and 'bdata' in obj:
+        dtype = np.dtype(obj['dtype'])
+        return np.frombuffer(base64.b64decode(obj['bdata']), dtype=dtype)
+    return obj
+
+# Decode the numpy arrays in the JSON data
+def decode_json(obj):
+    if isinstance(obj, dict):
+        return {k: decode_json(decode_numpy_array(v)) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [decode_json(item) for item in obj]
+    return obj
 
 def save_chat_local(file_path, new_data, session_id):
     """Store long term chat history Local Disk"""   
@@ -155,6 +184,7 @@ def load_chat_local(file_path,session_id):
     
     
 def process_files(files):
+    """process uploaded files in parallel"""
     result_string=""
     errors = []
     future_proxy_mapping = {} 
@@ -173,9 +203,8 @@ def process_files(files):
             file_url= future_proxy_mapping[future]
             try:
                 result = future.result()               
-                doc_name=os.path.basename(file_url)
-                
-                result_string+=f"<{doc_name}>\n{result}\n</{doc_name}>\n"
+                doc_name=os.path.basename(file_url)                
+                result_string+=f"<{doc_name}>\n{result}\n</{doc_name}>\n" # tag documnets with names to enhance prompts
             except Exception as e:
                 # Get the original function arguments from the Future object
                 error = {'file': file_url, 'error': str(e)}
@@ -208,11 +237,6 @@ def handle_doc_upload_or_s3(file, cutoff=None):
         content = obj['Body'].read()
         docx_buffer = io.BytesIO(content)        
         content = extract_text_from_pptx_s3(docx_buffer)
-    else:            
-        obj=get_s3_obj_from_bucket_(file)
-        content = obj['Body'].read()
-        doc_buffer = io.BytesIO(content)
-        content = textract.process(doc_buffer).decode()
     # Implement any other file extension logic 
     return content
 
@@ -281,8 +305,7 @@ def extract_text_and_tables(docx_path):
                         content += f"{current_section}</{section_type}>\n"
                         current_section = ""
                     section_type = "h3"  
-                    content += f"<{section_type}>{block.text}</{section_type}>\n"
-                
+                    content += f"<{section_type}>{block.text}</{section_type}>\n"                
                 elif block.style.name == 'List Paragraph':
                     # Add to the current list section
                     if section_type != "list":
@@ -307,7 +330,7 @@ def extract_text_and_tables(docx_path):
                         content += f"{current_section}</{section_type}>\n"
                         current_section = ""
                         section_type = None
-                    
+
                     # Append the passage text without tagging
                     content += f"{block.text}\n"
         
@@ -336,7 +359,6 @@ def extract_text_and_tables(docx_path):
     # Add the final section
     if current_section:
         content += f"{current_section}</{section_type}>\n"
-
     return content
 
 def parse_nested_table(table):
@@ -369,8 +391,9 @@ def extract_text_from_pptx_s3(pptx_buffer):
         text_content.append('\n'.join(slide_text))    
     return '\n\n'.join(text_content)
     
-def exract_pdf_text_aws(file):    
-    file_base_name=os.path.basename(file)
+def exract_pdf_text_aws(file):
+    """extract text from PDFs using Amazon Textract or PyPDF2"""
+    file_base_name = os.path.basename(file)
     dir_name, ext = os.path.splitext(file)
     # Checking if extracted doc content is in S3
     if USE_TEXTRACT:        
@@ -380,34 +403,34 @@ def exract_pdf_text_aws(file):
             return text
         else:
             
-            extractor = Textractor(region_name=REGION)
+            extractor = Textractor()
             # Asynchronous call, you will experience some wait time. Try caching results for better experience
             if "pdf" in ext:
                 print("Asynchronous call, you may experience some wait time.")
                 document = extractor.start_document_analysis(
-                file_source=file,
-                features=[TextractFeatures.LAYOUT,TextractFeatures.TABLES],       
-                save_image=False,   
-                s3_output_path=f"s3://{BUCKET}/textract_output/"
-            )
-            #Synchronous call
+                    file_source=file,
+                    features=[TextractFeatures.LAYOUT, TextractFeatures.TABLES],
+                    save_image=False,
+                    s3_output_path=f"s3://{BUCKET}/textract_output/"
+                )
+            # Synchronous call
             else:
                 document = extractor.analyze_document(
-                file_source=file,
-                features=[TextractFeatures.LAYOUT,TextractFeatures.TABLES],  
-                save_image=False,
-            )
+                    file_source=file,
+                    features=[TextractFeatures.LAYOUT,TextractFeatures.TABLES],  
+                    save_image=False,
+                  )
             config = TextLinearizationConfig(
-            hide_figure_layout=False,   
-            hide_header_layout=False,    
-            table_prefix="<table>",
-            table_suffix="</table>",
+                hide_figure_layout=False,   
+                hide_header_layout=False,    
+                table_prefix="<table>",
+                table_suffix="</table>",
             )
             # Upload extracted content to s3
             S3.put_object(Body=document.get_text(config=config), Bucket=BUCKET, Key=f"{TEXTRACT_RESULT_CACHE_PATH}/{file_base_name}.txt") 
             return document.get_text(config=config)
     else:
-        s3=boto3.resource("s3")
+        s3 = boto3.resource("s3")
         match = re.match("s3://(.+?)/(.+)", file)
         if match:
             bucket_name = match.group(1)
@@ -433,12 +456,13 @@ def exract_pdf_text_aws(file):
             image_stream = io.BytesIO(img_bytes)
             image = Image.open(image_stream)
             text = pytesseract.image_to_string(image)
-        return text    
+        return text
 
 def strip_newline(cell):
     return str(cell).strip()
 
 def table_parser_openpyxl(file, cutoff):
+    """convert xlsx files to python pandas handling merged cells"""
     # Read from S3
     s3 = boto3.client('s3')
     match = re.match("s3://(.+?)/(.+)", file)
@@ -451,7 +475,7 @@ def table_parser_openpyxl(file, cutoff):
         xlsx_buffer.seek(0)    
         # Load workbook
         wb = openpyxl.load_workbook(xlsx_buffer)    
-        all_sheets_string=""
+        all_sheets_string = ""
         # Iterate over each sheet in the workbook
         for sheet_name in wb.sheetnames:
             # all_sheets_name.append(sheet_name)
@@ -470,7 +494,7 @@ def table_parser_openpyxl(file, cutoff):
             df = pd.DataFrame(worksheet.values)
             df = df.map(strip_newline)
             if cutoff:
-                df=df.iloc[:20]
+                df = df.iloc[:20]
 
             # Convert to string and tag by sheet name
             tabb=df.to_csv(sep=CSV_SEPERATOR, index=False, header=0)
@@ -490,7 +514,7 @@ def calamaine_excel_engine(file,cutoff):
         # Read Excel file from S3 into a buffer
         xlsx_buffer = io.BytesIO(obj['Body'].read())
         xlsx_buffer.seek(0)    
-        all_sheets_string=""
+        all_sheets_string = ""
         # Load the Excel file
         workbook = CalamineWorkbook.from_filelike(xlsx_buffer)
         # Iterate over each sheet in the workbook
@@ -500,24 +524,24 @@ def calamaine_excel_engine(file,cutoff):
             df = pd.DataFrame(sheet.to_python(skip_empty_area=False))
             df = df.map(strip_newline)
             if cutoff:
-                df=df.iloc[:20]
+                df = df.iloc[:20]
             # print(df)
-            tabb=df.to_csv(sep=CSV_SEPERATOR, index=False, header=0)
-            all_sheets_string+=f'<{sheet_name}>\n{tabb}\n</{sheet_name}>\n'
+            tabb = df.to_csv(sep=CSV_SEPERATOR, index=False, header=0)
+            all_sheets_string += f'<{sheet_name}>\n{tabb}\n</{sheet_name}>\n'
         return all_sheets_string
     else:
         raise Exception(f"{file} not formatted as an S3 path")
 
 def table_parser_utills(file,cutoff):
     try:
-        response= table_parser_openpyxl(file,cutoff)
+        response = table_parser_openpyxl(file, cutoff)
         if response:
             return response
         else:
-            return calamaine_excel_engine(file,cutoff)        
+            return calamaine_excel_engine(file, cutoff)        
     except Exception as e:
         try:
-            return calamaine_excel_engine(file,cutoff)
+            return calamaine_excel_engine(file, cutoff)
         except Exception as e:
             raise Exception(str(e))
 
@@ -540,58 +564,59 @@ def put_db(params,messages):
     )
     
     
-def get_chat_history_db(params,cutoff,claude3):
-    current_chat, chat_hist=[],[]
-    if params['chat_histories']: 
-        chat_hist=params['chat_histories'][-cutoff:]              
+def get_chat_history_db(params,cutoff,vision_model):
+    """process chat histories from local or DynamoDb to format expected by model input"""
+    current_chat, chat_hist = [], []
+    if params['chat_histories'] and cutoff != 0: 
+        chat_hist = params['chat_histories'][-cutoff:]
         for d in chat_hist:
-            if d['image'] and claude3 and LOAD_DOC_IN_ALL_CHAT_CONVO:
-                content=[]
+            if d['image'] and vision_model and LOAD_DOC_IN_ALL_CHAT_CONVO:
+                content = []
                 for img in d['image']:
                     s3 = boto3.client('s3')
                     match = re.match("s3://(.+?)/(.+)", img)
-                    image_name=os.path.basename(img)
-                    _,ext=os.path.splitext(image_name)
-                    if "jpg" in ext: ext=".jpeg"                        
+                    image_name = os.path.basename(img)
+                    _, ext = os.path.splitext(image_name)
+                    if "jpg" in ext:
+                        ext = ".jpeg"
                     # if match:
                     bucket_name = match.group(1)
                     key = match.group(2)    
                     obj = s3.get_object(Bucket=bucket_name, Key=key)
-                    bytes_image=obj['Body'].read()            
-                    content.extend([{"text":image_name},{
+                    bytes_image = obj['Body'].read()            
+                    content.extend([{"text": image_name}, {
                       "image": {
                         "format": f"{ext.lower().replace('.','')}",
-                        "source": {"bytes":bytes_image}
+                        "source": {"bytes": bytes_image}
                       }
                     }])
                 content.extend([{"text":d['user']}])
                 current_chat.append({'role': 'user', 'content': content})
             elif d['document'] and LOAD_DOC_IN_ALL_CHAT_CONVO:
-                ### Handle scenario where tool is used for dataset that is out of context for the model context length
+                # Handle scenario where tool is used for dataset that is out of context for the model context length
                 if 'tool_use_id' in d and d['tool_use_id']:
-                    doc='Here are the documents:\n'
+                    doc = 'Here are the documents:\n'
                     for docs in d['document']:     
-                        uploads=handle_doc_upload_or_s3(docs,20)
-                        doc_name=os.path.basename(docs)
-                        doc+=f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
-                else:                
-                    doc='Here are the documents:\n'
+                        uploads = handle_doc_upload_or_s3(docs,20)
+                        doc_name = os.path.basename(docs)
+                        doc += f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
+                else:
+                    doc = 'Here are the documents:\n'
                     for docs in d['document']:
-                        uploads=handle_doc_upload_or_s3(docs)
-                        doc_name=os.path.basename(docs)
-                        doc+=f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
-                if not claude3 and d["image"]:
+                        uploads = handle_doc_upload_or_s3(docs)
+                        doc_name = os.path.basename(docs)
+                        doc += f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
+                if not vision_model and d["image"]:
                     for docs in d['image']:
-                        uploads=handle_doc_upload_or_s3(docs)
-                        doc_name=os.path.basename(docs)
-                        doc+=f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
-                current_chat.append({'role': 'user', 'content': [{"text":doc+d['user']}]})
+                        uploads = handle_doc_upload_or_s3(docs)
+                        doc_name = os.path.basename(docs)
+                        doc += f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
+                current_chat.append({'role': 'user', 'content': [{"text": doc+d['user']}]})
             else:
-                current_chat.append({'role': 'user', 'content': [{"text":d['user']}]})
-            current_chat.append({'role': 'assistant', 'content':[{"text":d['assistant']}]})  
+                current_chat.append({'role': 'user', 'content': [{"text": d['user']}]})
+            current_chat.append({'role': 'assistant', 'content': [{"text": d['assistant']}]})
     else:
-        chat_hist=[]
-    # st.write(current_chat)
+        chat_hist = []
     return current_chat, chat_hist
 
   
@@ -652,7 +677,7 @@ def copy_s3_object(source_uri, dest_bucket, dest_key):
             'Bucket': source_bucket,
             'Key': source_key
         }
-        source_key=os.path.basename(source_key)
+
         # Copy the object
         s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=f"{dest_key}/{source_key}")
 
@@ -664,6 +689,38 @@ def copy_s3_object(source_uri, dest_bucket, dest_key):
         raise(e)
         # return False
 
+def plotly_to_png_bytes(s3_uri):
+    """
+    Read a .plotly file from S3 given an S3 URI, convert it to a PNG image, and return the image as bytes.
+
+    :param s3_uri: S3 URI of the .plotly file (e.g., 's3://bucket-name/path/to/file.plotly')
+    :return: PNG image as bytes
+    """
+    # Parse S3 URI
+    parsed_uri = urlparse(s3_uri)
+    bucket_name = parsed_uri.netloc
+    file_key = parsed_uri.path.lstrip('/')
+
+    # Initialize S3 client
+    s3_client = boto3.client('s3')
+
+    try:
+        # Read the .plotly file from S3
+        response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
+        plotly_data = json.loads(response['Body'].read().decode('utf-8'))
+
+        # Create a Figure object from the plotly data
+        fig = go.Figure(data=plotly_data['data'], layout=plotly_data.get('layout', {}))
+
+        # Convert the figure to PNG bytes
+        img_bytes = fig.to_image(format="png")
+
+        return img_bytes
+
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return None
+        
 
 def get_s3_obj_from_bucket_(file):
     s3 = boto3.client('s3')
@@ -681,64 +738,98 @@ def put_obj_in_s3_bucket_(docs):
             file_uri=copy_s3_object(docs, BUCKET, S3_DOC_CACHE_PATH)
             return file_uri
     else:
-        file_name=os.path.basename(docs.name)
-        file_path=f"{S3_DOC_CACHE_PATH}/{file_name}"
-        S3.put_object(Body=docs.read(),Bucket= BUCKET, Key=file_path)
+        file_name = os.path.basename(docs.name)
+        file_path = f"{S3_DOC_CACHE_PATH}/{file_name}"
+        S3.put_object(Body=docs.read(), Bucket= BUCKET, Key=file_path)
         return f"s3://{BUCKET}/{file_path}"
 
 
 def bedrock_streemer(params,response, handler):
-    text=''
-    for chunk in response['stream']:       
-
+    """ stream response from bedrock Runtime"""
+    text = ''
+    think = ""
+    signature = ""
+    for chunk in response['stream']:    
         if 'contentBlockDelta' in chunk:
             delta = chunk['contentBlockDelta']['delta']       
+            # print(chunk)
             if 'text' in delta:
-                text += delta['text']               
-                handler.markdown(text.replace("$","USD ").replace("%", " percent"))
-
+                text += delta['text']
+                handler.markdown(text.replace("$", "\\$"), unsafe_allow_html=True)
+            if 'reasoningContent' in delta:
+                if "text" in delta['reasoningContent']:
+                    think += delta['reasoningContent']['text']                    
+                    handler.markdown('**MODEL REASONING**\n\n' + think.replace("$", "\\$"), unsafe_allow_html=True)
+                elif "signature" in delta['reasoningContent']:
+                    signature = delta['reasoningContent']['signature']
+    
         elif "metadata" in chunk:
-            st.session_state['input_token']=chunk['metadata']['usage']["inputTokens"]
-            st.session_state['output_token']=chunk['metadata']['usage']["outputTokens"]
-            latency=chunk['metadata']['metrics']["latencyMs"]
-            pricing=st.session_state['input_token']*pricing_file[f"anthropic.{params['model']}"]["input"]+st.session_state['output_token'] *pricing_file[f"anthropic.{params['model']}"]["output"]
-            st.session_state['cost']+=pricing             
-    return text
+            if 'cacheReadInputTokens' in chunk['metadata']['usage']:
+                print(f"\nCache Read Tokens: {chunk['metadata']['usage']['cacheReadInputTokens']}")
+                print(f"Cache Write Tokens: {chunk['metadata']['usage']['cacheWriteInputTokens']}")
+            input_tokens = chunk['metadata']['usage']["inputTokens"]
+            output_tokens = chunk['metadata']['usage']["outputTokens"]
+            latency = chunk['metadata']['metrics']["latencyMs"]        
+            pricing = st.session_state['input_token']*pricing_file[f"{params['model']}"]["input"] + st.session_state['output_token'] * pricing_file[f"{params['model']}"]["output"]
+            st.session_state['cost']+=pricing 
+            print(f"\nInput Tokens: {input_tokens}\nOutput Tokens: {output_tokens}\nLatency: {latency}ms")
+    return text, think
 
-def bedrock_claude_(params,chat_history,system_message, prompt,model_id,image_path=None, handler=None):
+def bedrock_claude_(params, chat_history, system_message, prompt,
+                    model_id, image_path=None, handler=None):
+    """ format user request and chat history and make a call to Bedrock Runtime"""
     chat_history_copy = chat_history[:]
-    content=[]
-    if image_path:       
+    content = []
+    if image_path:
         if not isinstance(image_path, list):
-            image_path=[image_path]      
+            image_path = [image_path]
         for img in image_path:
-            s3 = boto3.client('s3',region_name="us-east-1")
-            match = re.match("s3://(.+?)/(.+)", img)            
-            image_name=os.path.basename(img)
-            _,ext=os.path.splitext(image_name)
-            if "jpg" in ext: ext=".jpeg"           
+            s3 = boto3.client('s3', region_name=REGION)
+            match = re.match("s3://(.+?)/(.+)", img)
+            image_name = os.path.basename(img)
+            _, ext = os.path.splitext(image_name)
+            if "jpg" in ext:
+                ext = ".jpeg"
             bucket_name = match.group(1)
-            key = match.group(2)    
-            obj = s3.get_object(Bucket=bucket_name, Key=key)
-            bytes_image=obj['Body'].read()            
+            key = match.group(2)
+            if ".plotly" in key:
+                print(key)
+                bytes_image = plotly_to_png_bytes(img)
+                ext = ".png"
+            else:
+                obj = s3.get_object(Bucket=bucket_name, Key=key)
+                bytes_image = obj['Body'].read()
             content.extend([{"text":image_name},{
-              "image": {
-                "format": f"{ext.lower().replace('.','')}",
-                "source": {"bytes":bytes_image}
-              }
-            }])
+                             "image": {
+                                        "format": f"{ext.lower().replace('.', '')}",
+                                        "source": {"bytes": bytes_image}
+                                      }
+                        }])
 
     content.append({       
         "text": prompt
             })
     chat_history_copy.append({"role": "user",
-            "content": content})
-    system_message=[{"text":system_message}]
-    response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,inferenceConfig={"maxTokens": 2000, "temperature": 0.5,},system=system_message)
-    answer=bedrock_streemer(params,response, handler) 
-    return answer
+                              "content": content})
+    system_message = [{"text": system_message}]
 
-def _invoke_bedrock_with_retries(params,current_chat, chat_template, question, model_id, image_path, handler):
+    if st.session_state['reasoning_mode']:
+        response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,
+                                                   inferenceConfig={"maxTokens": 18000, "temperature": 1},
+                                                   system=system_message,
+                                                   additionalModelRequestFields={"thinking": {"type": "enabled", "budget_tokens": 10000}}
+                                                  )
+    else:
+        response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,
+                                                   inferenceConfig={"maxTokens": 4000 if "deepseek" not in model_id else 20000,
+                                                                    "temperature": 0.5 if "deepseek" not in model_id else 0.6,
+                                                                   },
+                                                   system=system_message,
+                                                  )
+    answer, think=bedrock_streemer(params, response, handler)
+    return answer, think
+
+def _invoke_bedrock_with_retries(params, current_chat, chat_template, question, model_id, image_path, handler):
     max_retries = 10
     backoff_base = 2
     max_backoff = 3  # Maximum backoff time in seconds
@@ -746,8 +837,8 @@ def _invoke_bedrock_with_retries(params,current_chat, chat_template, question, m
 
     while True:
         try:
-            response = bedrock_claude_(params,current_chat, chat_template, question, model_id, image_path, handler)
-            return response
+            response, think = bedrock_claude_(params,current_chat, chat_template, question, model_id, image_path, handler)
+            return response, think
         except ClientError as e:
             if e.response['Error']['Code'] == 'ThrottlingException':
                 if retries < max_retries:
@@ -776,7 +867,6 @@ def _invoke_bedrock_with_retries(params,current_chat, chat_template, question, m
             else:
                 # Some other API error, rethrow
                 raise
-                
 
 def get_session_ids_by_user(table_name, user_id):
     """
@@ -784,7 +874,7 @@ def get_session_ids_by_user(table_name, user_id):
     """
     if DYNAMODB_TABLE:
         table = DYNAMODB.Table(table_name)
-        message_list={}
+        message_list = {}
         session_ids = []
         args = {
             'KeyConditionExpression': Key('UserId').eq(user_id)
@@ -798,7 +888,7 @@ def get_session_ids_by_user(table_name, user_id):
 
         for session_id in session_ids:
             try:
-                message_list[session_id]=DYNAMODB.Table(table_name).get_item(Key={"UserId": user_id, "SessionId":session_id})['Item']['messages'][0]['user']
+                message_list[session_id] = DYNAMODB.Table(table_name).get_item(Key={"UserId": user_id, "SessionId": session_id})['Item']['messages'][0]['user']
             except Exception as e:
                 print(e)
                 pass
@@ -855,35 +945,28 @@ def list_csv_xlsx_in_s3_folder(bucket_name, folder_path):
 
 def query_llm(params, handler):
     """
-    Function takes a user query and a uploaded document. Caches documents in S3
-    passing a document is optional
+    Handles users requests and routes to a native call or tool use, then stores sonversation to local or DynamoDB
     """  
 
     if not isinstance(params['upload_doc'], list):
-        raise TypeError("documents must be in a list format")        
-    # Check if Claude3 model is used and handle images with the CLAUDE3 Model
-    claude3=False
-    if "claude" in params['model']:
-        model='anthropic.'+params['model']
-    else:
-        model=params['model']+"-instruct-v1:0"
-        
+        raise TypeError("documents must be in a list format")
 
-    if "sonnet" in model or "haiku" in model:
-        model+="-20240620-v1:0" if "claude-3-5" in model else  "-20240307-v1:0" if "haiku" in model else "-20240229-v1:0"
-        claude3=True
+    vision_model = True
+    model = 'us.' + model_info[params['model']]
+    if any(keyword in params['model'] for keyword in NON_VISION_MODELS):
+        vision_model = False
 
-    ## prompt template for when a user uploads a doc
-    doc_path=[]
-    image_path=[]
-    full_doc_path=[]
-    doc=""
-    if params['tools']:        
-        messages, tool, results, image_holder,doc_list,stop_reason=function_calling_utils.function_caller_claude_(params, handler)
-        if stop_reason!="tool_use":
+    # prompt template for when a user uploads a doc
+    doc_path = []
+    image_path = []
+    full_doc_path = []
+    doc = ""
+    if params['tools']:
+        messages, tool, results, image_holder, doc_list, stop_reason, plotly_fig = function_calling_utils.function_caller_claude_(params, handler)
+        if stop_reason != "tool_use":
             return messages
-        elif stop_reason=="tool_use":
-            prompt=f"""You are a conversational AI Assitant. 
+        elif stop_reason == "tool_use":
+            prompt = f"""You are a conversational AI Assitant. 
 I will provide you with an question on a dataset, a python code that implements the solution to the question and the result of that code solution.
 Here is the question:
 <question>
@@ -906,82 +989,89 @@ When providing your respons:
 - It should not be obvious you are referencing the result."""
  
             system_message="You always provide your response in a well presented format using markdown. Make use of tables, list etc. where necessary in your response, so information is well preseneted and easily read."
-            answer=_invoke_bedrock_with_retries(params,[], system_message, prompt, model, image_holder,handler)
-            
-            chat_history={"user":results["text"] if "text" in results else "",
-                "assistant":answer,
-                "image":image_holder ,
-                "document":[],#data_file,#doc_list,
-                "modelID":model,
-                "code":tool['input']['code'],
-                "time":str(time.time()),
-"input_token":round(st.session_state['input_token']) ,
-        "output_token":round(st.session_state['output_token']),
-                "tool_result_id":tool['toolUseId'],
-                "tool_name":'',
-                "tool_params":''}               
-      
-            #store convsation memory in DynamoDB table
+            answer, think = _invoke_bedrock_with_retries(params, [], system_message, prompt, model, image_holder, handler)
+
+            chat_history = {
+                "user": results["text"] if "text" in results else "",
+                "assistant": answer,
+                "image": image_holder,
+                "document": [],  # data_file,#doc_list,
+                "plotly": plotly_fig,
+                "modelID": model,
+                "thinking": think,
+                "code": tool['input']['code'],
+                "time": str(time.time()),
+                "input_token": round(st.session_state['input_token']) ,
+                "output_token": round(st.session_state['output_token']),
+                "tool_result_id": tool['toolUseId'],
+                "tool_name": '',
+                "tool_params": ''
+            }
+            # store convsation memory in DynamoDB table
             if DYNAMODB_TABLE:
                 put_db(params, chat_history)
             # use local disk for storage
-            else:        
-                save_chat_local("chat.json",[chat_history],params)
+            else:
+                save_chat_local(LOCAL_CHAT_FILE_NAME, [chat_history], params["session_id"])
             return answer
     else:
-        current_chat,chat_hist=get_chat_history_db(params, CHAT_HISTORY_LENGTH,claude3)
+        current_chat, chat_hist = get_chat_history_db(params, CHAT_HISTORY_LENGTH, vision_model)
         if params['upload_doc'] or params['s3_objects']:
             if params['upload_doc']:  
-                doc='I have provided documents and/or images.\n'
-                for ids,docs in enumerate(params['upload_doc']):
-                    file_name=docs.name
-                    _,extensions=os.path.splitext(file_name)
-                    docs=put_obj_in_s3_bucket_(docs)
+                doc = 'I have provided documents and/or images.\n'
+                for ids, docs in enumerate(params['upload_doc']):
+                    file_name = docs.name
+                    _, extensions = os.path.splitext(file_name)
+                    docs = put_obj_in_s3_bucket_(docs)
                     full_doc_path.append(docs)
-                    if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
+                    if extensions.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"] and vision_model:
                         image_path.append(docs)
                         continue
     
-            if params['s3_objects']:  
-                doc='I have provided documents and/or images.\n'
-                for ids,docs in enumerate(params['s3_objects']):
-                    file_name=docs
-                    _,extensions=os.path.splitext(file_name)
-                    docs=put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")
+            if params['s3_objects']:
+                doc = 'I have provided documents and/or images.\n'
+                for ids, docs in enumerate(params['s3_objects']):
+                    file_name = docs
+                    _, extensions = os.path.splitext(file_name)
+                    docs = put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")
                     full_doc_path.append(docs)
-                    if extensions.lower() in [".jpg",".jpeg",".png",".gif",".webp"] and claude3:
+                    if extensions.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"] and vision_model:
                         image_path.append(docs)
                         continue
 
             doc_path = [item for item in full_doc_path if item not in image_path]
-            errors, result_string=process_files(doc_path)    
+            errors, result_string = process_files(doc_path)
             if errors:
                 st.error(errors)
-            doc+= result_string
-            with open("prompt/doc_chat.txt","r", encoding="utf-8") as f:
-                chat_template=f.read()  
-        else:        
+            doc += result_string
+            with open("prompt/doc_chat.txt", "r", encoding="utf-8") as f:
+                chat_template = f.read()
+        else:
             # Chat template for open ended query
-            with open("prompt/chat.txt","r",encoding="utf-8") as f:
-                chat_template=f.read()
-        # st.write(current_chat)
-        # time.sleep(60)
-        response=_invoke_bedrock_with_retries(params,current_chat, chat_template, doc+params['question'], model, image_path, handler)
+            with open("prompt/chat.txt", "r", encoding="utf-8") as f:
+                chat_template = f.read()
+
+        response, think = _invoke_bedrock_with_retries(params, current_chat, chat_template,
+                                                       doc+params['question'], model,
+                                                       image_path, handler)
         # log the following items to dynamodb
-        chat_history={"user":params['question'],
-        "assistant":response,
-        "image":image_path,
-        "document":doc_path,
-        "modelID":model,
-        "time":str(time.time()),
-        "input_token":round(st.session_state['input_token']) ,
-        "output_token":round(st.session_state['output_token'])} 
-        #store convsation memory and user other items in DynamoDB table
+        chat_history = {
+            "user": params['question'],
+            "assistant": response,
+            "image": image_path,
+            "document": doc_path,
+            "modelID": model,
+            "thinking": think,
+            "time": str(time.time()),
+            "input_token": round(st.session_state['input_token']),
+            "output_token": round(st.session_state['output_token'])
+        }
+        # store convsation memory and user other items in DynamoDB table
         if DYNAMODB_TABLE:
-            put_db(params,chat_history)
+            put_db(params, chat_history)
         # use local memory for storage
         else:
-            save_chat_local(LOCAL_CHAT_FILE_NAME,[chat_history], params["session_id"])  
+            save_chat_local(LOCAL_CHAT_FILE_NAME, [chat_history], params["session_id"])
         return response
 
 
@@ -993,48 +1083,53 @@ def get_chat_historie_for_streamlit(params):
         chat_histories = DYNAMODB.Table(DYNAMODB_TABLE).get_item(Key={"UserId": st.session_state['userid'], "SessionId":params["session_id"]})
         # st.write(chat_histories)
         if "Item" in chat_histories:
-            chat_histories=chat_histories['Item']['messages'] 
+            chat_histories = chat_histories['Item']['messages']
         else:
-            chat_histories=[]
+            chat_histories = []
     else:
-        chat_histories=load_chat_local(LOCAL_CHAT_FILE_NAME,params["session_id"])         
+        chat_histories = load_chat_local(LOCAL_CHAT_FILE_NAME, params["session_id"])
 
-# Constructing the desired list of dictionaries
-    formatted_data = []   
+    # Constructing the desired list of dictionaries
+    formatted_data = []
     if chat_histories:
-        for entry in chat_histories:           
-            image_files=[os.path.basename(x) for x in entry.get('image', [])]
-            doc_files=[os.path.basename(x) for x in entry.get('document', [])]
-            code_script=entry.get('code', "")
+        for entry in chat_histories:
+            image_files = [os.path.basename(x) for x in entry.get('image', [])]
+            doc_files = [os.path.basename(x) for x in entry.get('document', [])]
+            code_script = entry.get('code', "")
             assistant_attachment = '\n\n'.join(image_files+doc_files)
-            ### Get entries but dont show the Function calling unecessary parts in the chat dialogue on streamlit
+            # Get entries but dont show the Function calling unecessary parts in the chat dialogue on streamlit
             if "tool_result_id" in entry and not entry["tool_result_id"]:
                 formatted_data.append({
                     "role": "user",
                     "content": entry["user"],
+                    "thinking":  entry.get('thinking', "")
                 })
             elif not "tool_result_id" in entry :
                   formatted_data.append({
                     "role": "user",
                     "content": entry["user"],
+                    "thinking":  entry.get('thinking', "")
                 })
             if "tool_use_id" in entry and not entry["tool_use_id"]:
                 formatted_data.append({
                     "role": "assistant",
                     "content": entry["assistant"],
                     "attachment": assistant_attachment,
-                    "code":code_script,
+                    "code": code_script,
+                    "thinking":  entry.get('thinking', "")
                     # "image_output": entry.get('image', []) if entry["tool_result_id"] else []
                 })
-            elif not "tool_use_id" in entry :
-                  formatted_data.append({
-                    "role": "assistant",
-                    "content": entry["assistant"],
-                    "attachment": assistant_attachment,
-                    "code":code_script,
-                    "code-result":entry["user"],
-                    "image_output": entry.get('image', []) if "tool_result_id" in entry else []
-                })
+            elif "tool_use_id" not in entry:
+              formatted_data.append({
+                "role": "assistant",
+                "content": entry["assistant"],
+                "attachment": assistant_attachment,
+                "code": code_script,
+                "code-result": entry["user"],
+                "image_output": entry.get('image', []) if "tool_result_id" in entry else [],
+                "plotly": entry.get('plotly', []) if "tool_result_id" in entry else [],
+                "thinking":  entry.get('thinking', "")
+            })
     else:
         chat_histories=[]            
     return formatted_data,chat_histories
@@ -1046,80 +1141,110 @@ def get_key_from_value(dictionary, value):
     
 def chat_bedrock_(params):
     st.title('Chatty AI Assitant 🙂')
-    params['chat_histories']=[]   
+    params['chat_histories'] = []
     if params["session_id"].strip():
-        st.session_state.messages, params['chat_histories']=get_chat_historie_for_streamlit(params)
+        st.session_state.messages, params['chat_histories'] = get_chat_historie_for_streamlit(params)
     for message in st.session_state.messages:
 
-        with st.chat_message(message["role"]):   
+        with st.chat_message(message["role"]):
             if "```" in message["content"]:
-                st.markdown(message["content"],unsafe_allow_html=True )
+                st.markdown(message["content"], unsafe_allow_html=True)
             else:
-                st.markdown(message["content"].replace("$", "\$"),unsafe_allow_html=True )
-            if message["role"]=="assistant":
-                if message["image_output"]:
+                st.markdown(message["content"].replace("$", "\\$"), unsafe_allow_html=True)
+            if message["role"] == "assistant":
+                if message["plotly"]:
+                    for item in message["plotly"]:
+                        bucket_name, key = item.replace('s3://', '').split('/', 1)
+                        image_bytes = get_object_with_retry(bucket_name, key)
+                        content = image_bytes['Body'].read()
+                        json_data = json.loads(content.decode('utf-8'))
+                        try:
+                            fig = pio.from_json(json.dumps(json_data))
+                        except Exception:
+                            decoded_data = decode_json(json_data)
+                            fig = go.Figure(data=decoded_data['data'], layout=decoded_data['layout'])
+                        st.plotly_chart(fig)
+
+                elif message["image_output"]:
                     for item in message["image_output"]:
                         bucket_name, key = item.replace('s3://', '').split('/', 1)
-                        image_bytes=get_object_with_retry(bucket_name,key)
+                        image_bytes = get_object_with_retry(bucket_name, key)
                         # image_bytes=base64.b64decode(message["image"][image_idx])
                         image = Image.open(io.BytesIO(image_bytes['Body'].read()))
                         st.image(image)
                 if message["attachment"]:
                     with st.expander(label="**attachments**"):
-                        st.markdown( message["attachment"])
+                        st.markdown(message["attachment"])
                         # st.markdown(message["image_output"])
                 if message['code']:
                     with st.expander(label="**code snippet**"):
-                        st.markdown( f'```python\n{message["code"]}',unsafe_allow_html=True )
+                        st.markdown(f'```python\n{message["code"]}', unsafe_allow_html=True)
                     with st.expander(label="**code result**"):
-                        st.markdown( f'```python\n{message["code-result"]}',unsafe_allow_html=True )
+                        st.markdown(f'```python\n{message["code-result"]}', unsafe_allow_html=True)
+                if message['thinking']:
+                    with st.expander(label="**MODEL REASONING**"):
+                        st.markdown(message["thinking"].replace("$", "\\$"), unsafe_allow_html=True)
 
-    if prompt := st.chat_input("Whats up?"):        
-        st.session_state.messages.append({"role": "user", "content": prompt})        
-        with st.chat_message("user"):        
-            st.markdown(prompt.replace("$", "\$"),unsafe_allow_html=True )
-        with st.chat_message("assistant"): 
-            message_placeholder = st.empty()           
-            params["question"]=prompt
-            answer=query_llm(params, message_placeholder)
-            message_placeholder.markdown(answer.replace("$", "\$"),unsafe_allow_html=True )
-            st.session_state.messages.append({"role": "assistant", "content": answer}) 
+    if prompt := st.chat_input("Whats up?"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt.replace("$", "\\$"), unsafe_allow_html=True )
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            params["question"] = prompt
+            answer = query_llm(params, message_placeholder)
+            message_placeholder.markdown(answer.replace("$", "\\$"), unsafe_allow_html=True )
+            st.session_state.messages.append({"role": "assistant", "content": answer})
         st.rerun()
-        
+
 def app_sidebar():
-    with st.sidebar:   
-        st.metric(label="Bedrock Session Cost", value=f"${round(st.session_state['cost'],2)}") 
+    with st.sidebar:
+        st.metric(label="Bedrock Session Cost", value=f"${round(st.session_state['cost'], 2)}") 
         st.write("-----")
-        button=st.button("New Chat", type ="primary")
-        models=[ 'claude-3-5-sonnet','claude-3-sonnet','claude-3-haiku','claude-instant-v1','claude-v2:1', 'claude-v2']
-        model=st.selectbox('**Model**', models)
-        params={"model":model} 
-        user_sess_id=get_session_ids_by_user(DYNAMODB_TABLE, st.session_state['userid'])
+        button = st.button("New Chat", type="primary")
+        models = MODEL_DISPLAY_NAME
+        model = st.selectbox('**Model**', models)
+        if any(keyword in model for keyword in HYBRID_MODELS):
+            st.session_state['reasoning_mode'] = st.toggle("Reasoning Mode", value=False, key="thinking")
+        runtime = ""
+        tools = ""
+        user_sess_id = get_session_ids_by_user(DYNAMODB_TABLE, st.session_state['userid'])
         float_keys = {float(key): value for key, value in user_sess_id.items()}
-        sorted_messages = sorted(float_keys.items(), reverse=True)      
-        sorted_messages.insert(0, (float(st.session_state['user_sess']),"New Chat"))        
+        sorted_messages = sorted(float_keys.items(), reverse=True)
+        sorted_messages.insert(0, (float(st.session_state['user_sess']), "New Chat"))
         if button:
             st.session_state['user_sess'] = str(time.time())
-            sorted_messages.insert(0, (float(st.session_state['user_sess']),"New Chat"))      
+            sorted_messages.insert(0, (float(st.session_state['user_sess']), "New Chat"))
         st.session_state['chat_session_list'] = dict(sorted_messages)
-        chat_items=st.selectbox("**Chat Sessions**",st.session_state['chat_session_list'].values(),key="chat_sessions")
-        session_id=get_key_from_value(st.session_state['chat_session_list'], chat_items)   
-        tools=st.multiselect("**Tools**",["Advanced Data Analytics"],key="function_collen",default=None)
-        bucket_items=list_csv_xlsx_in_s3_folder(INPUT_BUCKET, INPUT_S3_PATH)
-        bucket_objects=st.multiselect("**Files**",bucket_items,key="objector",default=None)
-        file = st.file_uploader('Upload a document', accept_multiple_files=True, help="pdf,csv,txt,png,jpg,xlsx,json,py doc format supported") 
+        chat_items = st.selectbox("**Chat Sessions**", st.session_state['chat_session_list'].values(), key="chat_sessions")
+        session_id = get_key_from_value(st.session_state['chat_session_list'], chat_items)
+        if model not in NON_TOOL_SUPPORTING_MODELS:
+            tools = st.multiselect("**Tools**", ["Advanced Data Analytics"],
+                                   key="function_collen", default=None)
+            if "Advanced Data Analytics" in tools:
+                engines = ["pyspark", "python"]
+                runtime = st.select_slider(
+                                "Runtime", engines, key="enginees"
+                            )
+        bucket_items = list_csv_xlsx_in_s3_folder(INPUT_BUCKET, INPUT_S3_PATH)
+        bucket_objects = st.multiselect("**Files**", bucket_items, key="objector", default=None)
+        file = st.file_uploader('Upload a document', accept_multiple_files=True,
+                                help="pdf,csv,txt,png,jpg,xlsx,json,py doc format supported")
         if file and LOAD_DOC_IN_ALL_CHAT_CONVO:
             st.warning('You have set **load-doc-in-chat-history** to true. For better performance, remove uploaded file(s) (by clicking **X**) **AFTER** first query on uploaded files. See the README for more info', icon="⚠️")
-        params={"model":model, "session_id":str(session_id), "chat_item":chat_items, "upload_doc":file, "tools":tools, 's3_objects':bucket_objects }    
-        st.session_state['count']=1
+        params = {"model": model, "session_id": str(session_id),
+                  "chat_item": chat_items,
+                  "upload_doc": file,
+                  "tools": tools,
+                  's3_objects': bucket_objects,
+                  "engine": runtime
+                 }
+        st.session_state['count'] = 1
         return params
 
 
 def main():
-    params=app_sidebar()
+    params = app_sidebar()
     chat_bedrock_(params)
-
-    
 if __name__ == '__main__':
-    main()   
-    
+    main()

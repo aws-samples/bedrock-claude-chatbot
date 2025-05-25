@@ -1,5 +1,5 @@
 # Bedrock Claude ChatBot
-Bedrock Chat App is a Streamlit application that allows users to interact with the Anthropic Bedrock language model. It provides a conversational interface where users can ask questions, upload documents, and receive responses from the AI assistant.
+Bedrock Chat App is a Streamlit application that allows users to interact with various LLMs on Amazon Bedrock. It provides a conversational interface where users can ask questions, upload documents, and receive responses from the AI assistant.
 
 
 <img src="images/chatbot4.png" width="1000"/>
@@ -13,10 +13,10 @@ READ THE FOLLOWING **PREREQUISITES** CAREFULLY.
 - **Caching**: Uploaded documents and extracted text are cached in an S3 bucket for improved performance. This serves as the object storage unit for the application as documents are retrieved and loaded into the model to keep conversation context.
 - **Chat History**: The app stores stores and retrieves chat history (including document metadata) to/from a DynamoDB table, allowing users to continue conversations across sessions.
 - **Session Store**:  The application utilizes DynamoDB to store and manage user and session information, enabling isolated conversations and state tracking for each user interaction.
-- **Model Selection**: Users can select different Anthropic models (Claude-3.5-Sonnet. Claude-3-Sonnet, Claude-3-Haiku, Claude-Instant-V1, Claude-V2, Claude-V2:1) for their queries. It incorporates the Bedrock Converse API providing a standardized model interface.
+- **Model Selection**: Users can select from a broad list of LLMs on Amazon Bedrock including latest models from Anthropic Claude, Amazon Nova, Meta Llama, Deepseek etc for their queries and can include additional models on Bedrock by modifying teh `model-id.json` file. It incorporates the Bedrock Converse API providing a standardized model interface.
 - **Cost Tracking**: The application calculates and displays the cost associated with each chat session based on the input and output token counts and the pricing model defined in the `pricing.json` file.
 - **Logging**: The items logged in the DynamoDB table include the user ID, session ID, messages, timestamps,uploaded documents s3 path, input and output token counts. This helps to isolate user engagement statistics and track the various items being logged, as well as attribute the cost per user.
-- **Tool Usage**: **`Advanced Data Analytics tool`** for processing and analyzing structured data (CSV, XLX and XLSX format).
+- **Tool Usage**: **`Advanced Data Analytics tool`** for processing and analyzing structured data (CSV, XLX and XLSX format) in an isolated and serverless enviroment.
 - **Extensible Tool Integration**: This app can be modified to leverage the extensive Domain Specific Language (DSL) knowledge inherent in Large Language Models (LLMs) to implement a wide range of specialized tools. This capability is enhanced by the versatile execution environments provided by Docker containers and AWS Lambda, allowing for dynamic and adaptable implementation of various DSL-based functionalities. This approach enables the system to handle diverse domain-specific tasks efficiently, without the need for hardcoded, specialized modules for each domain.
 
 There are two files of interest.
@@ -32,6 +32,13 @@ There are two files of interest.
     - Amazon Textract. This is optional as there is an option to use python libraries [`pypdf2`](https://pypi.org/project/PyPDF2/) and [`pytessesract`](https://pypi.org/project/pytesseract/) for PDF and image processing. However, I would recommend using Amazon Textract for higher quality PDF and image processing. You will experience latency when using `pytesseract`.
 
 To use the **Advanced Analytics Feature**, this additional step is required (ChatBot can still be used without enabling `Advanced Analytics Feature`):
+
+This feature can be powered by a **python** runtime on AWS Lambda and/or a **pyspark** runtime on Amazon Athena. Expand the appropiate section below to view the set-up instructions.
+
+<details>
+<summary><strong style="font-size: 1.2em;">AWS Lambda Python Runtime Setup</strong></summary>
+
+## AWS Lambda Function with Custom Python Image
 
 5. [Amazon Lambda](https://docs.aws.amazon.com/lambda/latest/dg/python-image.html#python-image-clients) function with custom python image to execute python code for analytics.
     - Create an private ECR repository by following the link in step 3.
@@ -57,6 +64,21 @@ To use the **Advanced Analytics Feature**, this additional step is required (Cha
 
         Modify the placeholders as appropiate. I recommend to keep `timeout` and `memory-size` params conservative as that will affect cost. A good staring point for memory is `512` MB.
         - Ignore step 8.
+</details>
+
+<details>
+<summary><strong style="font-size: 1.2em;">Amazon Athena Spark Runtime Setup</strong></summary>
+
+## Create Amazon Athena Spark WorkGroup
+
+5. Follow the instructions [Get started with Apache Spark on Amazon Athena](https://docs.aws.amazon.com/athena/latest/ug/notebooks-spark-getting-started.html) to create an Amazon Athena workgroup with Apache Spark. You `DO NOT` need to select `Turn on example notebook`.
+   - Provide S3 permissions to the workgroup execution role for the S3 buckets configured with this application.
+   - Note that the Amazon Athena Spark environment comes preinstalled with a select [few python libraries](https://docs.aws.amazon.com/athena/latest/ug/notebooks-spark-preinstalled-python-libraries.html).
+
+</details>
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
 
 **⚠ IMPORTANT SECURITY NOTE:**
 
@@ -67,14 +89,14 @@ Enabling the **Advanced Analytics Feature** allows the LLM to generate and execu
    - Use Amazon S3 and CloudWatch gateway/interface endpoints for necessary access.
 
 2. **IAM Permissions**: 
-   - Scope down the Lambda execution role to only Amazon S3 and the required S3 resources. This is in addition to `AWSLambdaBasicExecutionRole` policy.
+   - Scope down the AWS Lambda and/or Amazon Athena workgroup execution role to only Amazon S3 and the required S3 resources. This is in addition to `AWSLambdaBasicExecutionRole` policy if using AWS Lambda.
 
 3. **Library Restrictions**: 
    - Only libraries specified in `Docker/requirements.txt` will be available at runtime.
    - Modify this list carefully based on your needs.
 
 4. **Resource Allocation**: 
-   - Adjust Lambda `timeout` and `memory-size` based on data size and analysis complexity.
+   - Adjust AWS Lambda function `timeout` and `memory-size` based on data size and analysis complexity.
 
 5. **Production Considerations**: 
    - This application is designed for POC use.
@@ -100,6 +122,7 @@ The application's behavior can be customized by modifying the `config.json` file
 - `input_s3_path`: S3 directory prefix, without the foward and trailing slash, to render the S3 objects in the Chat UI.
 - `input_bucket`: S3 bucket name where the files to be rendered on the screen are stored.
 - `input_file_ext`: comma-seperated file extension names (without ".") for files in the S3 buckets to be rendered on the screen. By default `xlsx` and `csv` are included.
+- `athena-work-group-name`: Spark Amazon Athena workkgroup name created above. This is require if using the `Advanced Analytics Tool`
 
 **⚠ IMPORTANT ADVISORY FOR ADVANCED ANALYTICS FEATURE**
 
@@ -117,31 +140,16 @@ By following these guidelines, you mitigate the potential risk of unintended dat
 
 ## To run this Streamlit App on Sagemaker Studio follow the steps below:
 
-<img src="images/chatbot-adv.PNG" width="800"/>
+<img src="images/chatbot-snip.PNG" width="1000" height="1000"/>
 
-If You have a sagemaker Studio Domain already set up, ignore the first item, however, item 2 is required.
+
+![Video Title](images/demo.mp4)
+
+If You have a Sagemaker AI Studio Domain already set up, ignore the first item, however, item 2 is required.
 * [Set Up SageMaker Studio](https://docs.aws.amazon.com/sagemaker/latest/dg/onboard-quick-start.html) 
 * SageMaker execution role should have access to interact with [Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/api-setup.html), [S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html) and optionally [Textract](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AmazonTextractFullAccess.html) and [DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/iam-policy-specific-table-indexes.html) and [AWS Lambda](https://docs.aws.amazon.com/lambda/latest/dg/access-control-identity-based.html) if these services are used.
 
-### On Sagemaker Studio Classic
-* [Launch SageMaker Studio](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-launch.html)
-* [Clone this git repo into studio](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-tasks-git.html)
-* Open a system terminal by clicking on **Amazon SageMaker Studio** and then **System Terminal** as shown in the diagram below
-* <img src="images/studio-new-launcher.png" width="600"/>
-* Navigate into the cloned repository directory using the `cd bedrock-claude-chatbot` command and run the following commands to install the application python libraries:
-  - sudo yum update
-  - sudo yum upgrade -y
-  - chmod +x install_package.sh
-  - ./install_package.sh
-* If you decide to use Python Libs for PDF and image processing, this requires tesserect-ocr. Run the following command:
-    - sudo rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-    - sudo yum -y update
-    - sudo yum install -y tesseract
-* Run command `python3 -m streamlit run bedrock-chat.py --server.enableXsrfProtection false` to start the Streamlit server. Do not use the links generated by the command as they won't work in studio.
-* To enter the Streamlit app, open and run the cell in the **StreamlitLink.ipynb** notebook. This will generate the appropiate link to enter your Streamlit app from SageMaker studio. Click on the link to enter your Streamlit app.
-* **⚠ Note:**  If you rerun the Streamlit server it may use a different port. Take not of the port used (port number is the last 4 digit number after the last : (colon)) and modify the `port` variable in the `StreamlitLink.ipynb` notebook to get the correct link.
-
-### On SageMaker Studio JupyterLab:
+### On SageMaker AI Studio JupyterLab:
 * [Create a JupyterLab space](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-updated-jl.html)
 * <img src="images/JP-lab.PNG" width="600"/>
 * Open a terminal by clicking **File** -> **New** -> **Terminal**
@@ -187,9 +195,7 @@ If You have a sagemaker Studio Domain already set up, ignore the first item, how
 To stop the `tmux` session, in your ec2 terminal Press `Ctrl+b`, then `d` to detach. to kill the session, run `tmux kill-session -t mysession`
 
 ## Limitations and Future Updates
-1. **Limited Bedrock Model Selection**: The application currently supports a fixed set of Bedrock models, including "claude-3-sonnet", "claude-3-haiku", "claude-instant-v1", "claude-v2:1", and "claude-v2". Allowing users to select from a wider range of Bedrock models would make the application more versatile. Users can modify the `bedrock-chat.py` to add more Amazon Bedrock model ids.
-
-2. **Pricing**: Pricing is only calculated for the Bedrock models not including cost of any other AWS service used. In addition, the pricing information of the models are stored in a static `pricing.json` file. Do manually update the file to refelct current [Bedrock pricing details](https://aws.amazon.com/bedrock/pricing/). Use this cost implementation in this app as a rough estimate of actual cost of interacting with the Bedrock models as actual cost reported in your account may differ.
+1. **Pricing**: Pricing is only calculated for the Bedrock models not including cost of any other AWS service used. In addition, the pricing information of the models are stored in a static `pricing.json` file. Do manually update the file to refelct current [Bedrock pricing details](https://aws.amazon.com/bedrock/pricing/). Use this cost implementation in this app as a rough estimate of actual cost of interacting with the Bedrock models as actual cost reported in your account may differ.
 
 3. **Storage Encryption**: This application does not implement storing and reading files to and from S3 and/or DynamoDB using KMS keys for data at rest encryption.
 

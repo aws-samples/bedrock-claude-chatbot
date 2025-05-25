@@ -1,0 +1,31 @@
+{
+        "tools": [
+            {
+                "toolSpec": {
+                    "name": "python_function_tool",
+                    "description": "This tool allows you to analyze structured data files (CSV, XLSX, etc.) using Python programming language. It can be used to answer questions or perform analyses on the data contained in these files. Use this tool when the user asks questions or requests analyses related to structured data files. Do not use this tool for any other query not related to analyzing tabular data files.",
+                    "inputSchema": {
+                        "json": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "string",
+                                    "description": ""
+
+                                },
+                                "dataset_name": {
+                                    "type": "string",
+                                    "description": "The file name of the structured dataset including its extension (CSV, XLSX ..etc)"
+                                },
+                                "python_packages": {
+                                    "type": "string",
+                                    "description": "Comma-separated list of Python libraries required to run the function"
+                                }
+                            },
+                            "required": ["code","dataset_name","python_packages"]
+                        }
+                    }
+                }
+            }
+        ]
+    }

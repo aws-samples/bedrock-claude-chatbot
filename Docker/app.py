@@ -1,7 +1,5 @@
 import json
-import traceback
 import subprocess
-import base64
 import os
 import boto3
 import sys
@@ -105,35 +103,18 @@ def local_code_executy(code_string):
 
 
 
-def execute_function_string(input_code, trial, bucket, key_prefix):
+def execute_function_string(input_code):
     """
-    Execute a given Python code string, potentially modifying dataset paths to use S3. 
-    If it's the first trial (trial < 1) and the S3 bucket/prefix are not already in the code:
-       - Replaces local dataset references with S3 URIs.
-
+    Execute a given Python code string
     Parameters:
     input_code (dict): A dictionary containing the following keys:
         - 'code' (str): The Python code to be executed.
-        - 'dataset_name' (str or list, optional): Name(s) of the dataset(s) used in the code.
-    trial (int): A counter for execution attempts, used to determine if S3 paths should be injected.
-    bucket (str): The name of the S3 bucket where datasets are stored.
-    key_prefix (str): The S3 key prefix (folder path) where datasets are located within the bucket.
-
+        - 'dataset_name' (str or list, optional): Name(s) of the dataset(s) used in the code.   
     Returns:
     The result of executing the code using the local_code_executy function.
 
     """
     code_string = input_code['code']
-    dataset_names = input_code.get('dataset_name', [])
-    if isinstance(dataset_names, str):
-        dataset_names = [d.strip() for d in dataset_names.strip('[]').split(',')]
-
-    #BUCKET = os.environ.get('BUCKET', '')
-    #S3_DOC_CACHE_PATH = os.environ.get('S3_DOC_CACHE_PATH', '')
-
-    if trial < 1 and (key_prefix or bucket) not in code_string:
-        for dataset_name in dataset_names:
-            code_string = code_string.replace(dataset_name, f"s3://{bucket}/{key_prefix}/{dataset_name}")    
     return local_code_executy(code_string)
 
 
@@ -147,27 +128,28 @@ def put_obj_in_s3_bucket_(docs, bucket, key_prefix):
        str: The S3 URI of the uploaded object, in the format "s3://{bucket_name}/{file_path}".
     """
     S3 = boto3.client('s3')
-    if isinstance(docs,str):
-        file_name=os.path.basename(docs)
-        file_path=f"{key_prefix}/{docs}"
+    if isinstance(docs, str):
+        file_name = os.path.basename(docs)
+        file_path = f"{key_prefix}/{docs}"
         S3.upload_file(f"/tmp/{docs}", bucket, file_path)
     else:
-        file_name=os.path.basename(docs.name)
-        file_path=f"{key_prefix}/{file_name}"
-        S3.put_object(Body=docs.read(),Bucket= BUCKET, Key=file_path)           
+        file_name = os.path.basename(docs.name)
+        file_path = f"{key_prefix}/{file_name}"
+        S3.put_object(Body=docs.read(), Bucket=bucket, Key=file_path)
     return f"s3://{bucket}/{file_path}"
 
 
 
 def lambda_handler(event, context):
     try:
-        input_data = json.loads(event['body']) if isinstance(event.get('body'), str) else event.get('body', {})
+        input_data = json.loads(event) if isinstance(event, str) else event
         iterate = input_data.get('iterate', 0)
-        bucket=input_data.get('bucket','')
-        s3_file_path=input_data.get('file_path','')
-        result = execute_function_string(input_data, iterate, bucket, s3_file_path)
-        print(result)
+        bucket = input_data.get('bucket', '')
+        s3_file_path = input_data.get('file_path', '')
+        print(input_data, bucket, s3_file_path, iterate)
+        result = execute_function_string(input_data)
         image_holder = []
+        plotly_holder = []
 
         if isinstance(result, dict):
             for item, value in result.items():
@@ -175,21 +157,31 @@ def lambda_handler(event, context):
                     if isinstance(value, list):
                         for img in value:
                             image_path_s3 = put_obj_in_s3_bucket_(img, bucket, s3_file_path)
-                            image_holder.append(image_path_s3)                            
-                    else:                        
-                        image_path_s3 = put_obj_in_s3_bucket_(value,bucket,s3_file_path)
+                            image_holder.append(image_path_s3)
+                    else:
+                        image_path_s3 = put_obj_in_s3_bucket_(value, bucket, s3_file_path)
                         image_holder.append(image_path_s3)
+                if "plotly-files" in item and value is not None:  # Upload plotly objects to s3
+                    if isinstance(value, list):
+                        for img in value:
+                            image_path_s3 = put_obj_in_s3_bucket_(img, bucket, s3_file_path)
+                            plotly_holder.append(image_path_s3)
+                    else:
+                        image_path_s3 = put_obj_in_s3_bucket_(value, bucket, s3_file_path)
+                        plotly_holder.append(image_path_s3)
 
         tool_result = {
-            "result": result,            
-            "image_dict": image_holder
+            "result": result,
+            "image_dict": image_holder,
+            "plotly": plotly_holder
         }
-
+        print(tool_result)
         return {
             'statusCode': 200,
             'body': json.dumps(tool_result)
         }
     except Exception as e:
+        print(e)
         return {
             'statusCode': 500,
             'body': json.dumps({'error': str(e)})

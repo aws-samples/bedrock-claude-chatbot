@@ -4,7 +4,8 @@ streamlit
 boto3
 pymupdf
 pandas
-amazon-textract-textractor==1.7.1
+numpy
+amazon-textract-textractor
 openpyxl
 inflect
 pypdf2
@@ -16,4 +17,5 @@ openpyxl
 pydantic
 python-calamine
 s3fs
-textract==1.6.3
+plotly>=5.0.0,<6.0.0
+kaleido
