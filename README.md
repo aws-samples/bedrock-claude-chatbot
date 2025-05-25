@@ -143,7 +143,7 @@ By following these guidelines, you mitigate the potential risk of unintended dat
 <img src="images/chatbot-snip.PNG" width="1000"/>
 
 
-![Demo](https://github.com/ucheegbe/repository/raw/main/images/demo.mp4)
+![Demo](https://github.com/aws-samples/bedrock-claude-chatbot/raw/main/images/demo.mp4)
 
 If You have a Sagemaker AI Studio Domain already set up, ignore the first item, however, item 2 is required.
 * [Set Up SageMaker Studio](https://docs.aws.amazon.com/sagemaker/latest/dg/onboard-quick-start.html) 
