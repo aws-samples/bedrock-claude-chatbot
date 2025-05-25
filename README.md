@@ -140,10 +140,10 @@ By following these guidelines, you mitigate the potential risk of unintended dat
 
 ## To run this Streamlit App on Sagemaker Studio follow the steps below:
 
-<img src="images/chatbot-snip.PNG" width="1000" height="1000"/>
+<img src="images/chatbot-snip.PNG" width="1000"/>
 
 
-![Video Title](images/demo.mp4)
+![Demo](https://github.com/ucheegbe/repository/raw/main/images/demo.mp4)
 
 If You have a Sagemaker AI Studio Domain already set up, ignore the first item, however, item 2 is required.
 * [Set Up SageMaker Studio](https://docs.aws.amazon.com/sagemaker/latest/dg/onboard-quick-start.html) 
