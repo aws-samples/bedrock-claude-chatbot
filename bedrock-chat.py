@@ -953,7 +953,7 @@ def query_llm(params, handler):
 
     vision_model = True
     model = 'us.' + model_info[params['model']]
-    if any(keyword in params['model'] for keyword in NON_VISION_MODELS):
+    if any(keyword in [params['model']] for keyword in NON_VISION_MODELS):
         vision_model = False
 
     # prompt template for when a user uploads a doc
