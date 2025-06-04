@@ -767,12 +767,12 @@ def bedrock_streemer(params,response, handler):
             if 'cacheReadInputTokens' in chunk['metadata']['usage']:
                 print(f"\nCache Read Tokens: {chunk['metadata']['usage']['cacheReadInputTokens']}")
                 print(f"Cache Write Tokens: {chunk['metadata']['usage']['cacheWriteInputTokens']}")
-            input_tokens = chunk['metadata']['usage']["inputTokens"]
-            output_tokens = chunk['metadata']['usage']["outputTokens"]
+            st.session_state['input_token'] = chunk['metadata']['usage']["inputTokens"]
+            st.session_state['output_token'] = chunk['metadata']['usage']["outputTokens"]
             latency = chunk['metadata']['metrics']["latencyMs"]        
             pricing = st.session_state['input_token']*pricing_file[f"{params['model']}"]["input"] + st.session_state['output_token'] * pricing_file[f"{params['model']}"]["output"]
             st.session_state['cost']+=pricing 
-            print(f"\nInput Tokens: {input_tokens}\nOutput Tokens: {output_tokens}\nLatency: {latency}ms")
+            print(f"\nInput Tokens: {st.session_state['input_token']}\nOutput Tokens: {st.session_state['output_token']}\nLatency: {latency}ms")
     return text, think
 
 def bedrock_claude_(params, chat_history, system_message, prompt,
