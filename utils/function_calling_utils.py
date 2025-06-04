@@ -148,12 +148,12 @@ def bedrock_streemer(params,response, handler):
             if 'cacheReadInputTokens' in chunk['metadata']['usage']:
                 print(f"\nCache Read Tokens: {chunk['metadata']['usage']['cacheReadInputTokens']}")
                 print(f"Cache Write Tokens: {chunk['metadata']['usage']['cacheWriteInputTokens']}")
-            input_tokens = chunk['metadata']['usage']["inputTokens"]
-            output_tokens = chunk['metadata']['usage']["outputTokens"]
+            st.session_state['input_token'] = chunk['metadata']['usage']["inputTokens"]
+            st.session_state['output_token'] = chunk['metadata']['usage']["outputTokens"]
             latency = chunk['metadata']['metrics']["latencyMs"]
             pricing = st.session_state['input_token'] * pricing_file[f"{params['model']}"]["input"] + st.session_state['output_token'] * pricing_file[f"{params['model']}"]["output"]
             st.session_state['cost']+=pricing 
-            print(f"\nInput Tokens: {input_tokens}\nOutput Tokens: {output_tokens}\nLatency: {latency}ms")
+            print(f"\nInput Tokens: {st.session_state['input_token']}\nOutput Tokens: {st.session_state['output_token']}\nLatency: {latency}ms")
     return text, think
 
 def bedrock_claude_(params, chat_history, system_message, prompt, model_id, image_path=None, handler=None):
@@ -207,8 +207,11 @@ def bedrock_claude_(params, chat_history, system_message, prompt, model_id, imag
                                                    additionalModelRequestFields={"thinking": {"type": "enabled", "budget_tokens": 10000}}
                                                   )
     else:
+        max_tokens = 8000
+        if any(keyword in [params['model']] for keyword in ["haiku-3.5"]):
+            max_tokens = 4000
         response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,
-                                                   inferenceConfig={"maxTokens": 4000, "temperature": 0.5,},
+                                                   inferenceConfig={"maxTokens": max_tokens, "temperature": 0.5,},
                                                    system=system_message,
                                                   )
 
@@ -879,7 +882,8 @@ def get_chat_history_db(params, cutoff,vision_model):
                 current_chat.append({'role': 'assistant', 'content': [{"text": d['assistant']}]})
     return current_chat, chat_hist
 
-def stream_messages(bedrock_client,
+def stream_messages(params,
+                    bedrock_client,
                     model_id,
                     messages,
                     tool_config,
@@ -913,7 +917,7 @@ def stream_messages(bedrock_client,
         response = bedrock_client.converse_stream(
                 modelId=model_id,
                 messages=messages,
-                inferenceConfig={"maxTokens": 8000, "temperature": temperature},
+                inferenceConfig={"maxTokens": 4000, "temperature": temperature},
                 toolConfig=tool_config,
                 system=system
         )
@@ -962,9 +966,11 @@ def stream_messages(bedrock_client,
         elif 'messageStop' in chunk:
             stop_reason = chunk['messageStop']['stopReason']
         elif "metadata" in chunk:
-            input_tokens = chunk['metadata']['usage']["inputTokens"]
-            output_tokens = chunk['metadata']['usage']["outputTokens"]
+            st.session_state['input_token'] = chunk['metadata']['usage']["inputTokens"]
+            st.session_state['output_token'] = chunk['metadata']['usage']["outputTokens"]
             latency = chunk['metadata']['metrics']["latencyMs"]
+            pricing = st.session_state['input_token'] * pricing_file[f"{params['model']}"]["input"] + st.session_state['output_token'] * pricing_file[f"{params['model']}"]["output"]
+            st.session_state['cost']+=pricing
 
     if tool_use:
         try:
@@ -1091,7 +1097,7 @@ def function_caller_claude_(params, handler=None):
 
     vision_model = True
     model_id = 'us.' + model_info[params['model']]
-    if any(keyword in params['model'] for keyword in TEXT_ONLY_MODELS):
+    if any(keyword in [params['model']] for keyword in TEXT_ONLY_MODELS):
         vision_model = False
 
     full_doc_path = []
@@ -1182,7 +1188,7 @@ def function_caller_claude_(params, handler=None):
     current_chat.extend(messages)
     # Send the message and get the tool use request from response.
     stop_reason, message, input_tokens, output_tokens, think = stream_messages(
-        bedrock_client, model_id, current_chat, tool_config, system, 0.1, handler)
+        params, bedrock_client, model_id, current_chat, tool_config, system, 0.1, handler)
     messages.append(message)
     if stop_reason != "tool_use":
         chat_history = {
