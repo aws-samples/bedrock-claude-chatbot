@@ -118,11 +118,11 @@ The application's behavior can be customized by modifying the `config.json` file
 - `csv-delimiter`: The delimiter to use when parsing structured content to string. Supported formats are "|", "\t", and ",".
 - `document-upload-cache-s3-path`: S3 bucket path to cache uploaded files. Do not include the bucket name, just the prefix without a trailing slash. For example "path/to/files".
 - `AmazonTextract-result-cache`: S3 bucket path to cache Amazon Textract result. Do not include the bucket name, just the prefix without a trailing slash. For example "path/to/files".
-- `lambda-function`: Name of the Lambda function deploy in the steps above. This is require if using the `Advanced Analytics Tool`
+- `lambda-function`: Name of the Lambda function deploy in the steps above. This is required if using the `Advanced Analytics Tool` with AWS Lambda.
 - `input_s3_path`: S3 directory prefix, without the foward and trailing slash, to render the S3 objects in the Chat UI.
 - `input_bucket`: S3 bucket name where the files to be rendered on the screen are stored.
 - `input_file_ext`: comma-seperated file extension names (without ".") for files in the S3 buckets to be rendered on the screen. By default `xlsx` and `csv` are included.
-- `athena-work-group-name`: Spark Amazon Athena workkgroup name created above. This is require if using the `Advanced Analytics Tool`
+- `athena-work-group-name`: Spark Amazon Athena workkgroup name created above. This is required if using the `Advanced Analytics Tool` with Amazon Athena.
 
 **⚠ IMPORTANT ADVISORY FOR ADVANCED ANALYTICS FEATURE**
 
