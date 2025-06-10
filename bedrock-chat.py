@@ -816,7 +816,7 @@ def bedrock_claude_(params, chat_history, system_message, prompt,
     if st.session_state['reasoning_mode']:
         response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,
                                                    inferenceConfig={"maxTokens": 18000, "temperature": 1},
-                                                   system=system_message,
+                                                   system=system_message, 
                                                    additionalModelRequestFields={"thinking": {"type": "enabled", "budget_tokens": 10000}}
                                                   )
     else:
@@ -1204,8 +1204,11 @@ def app_sidebar():
         button = st.button("New Chat", type="primary")
         models = MODEL_DISPLAY_NAME
         model = st.selectbox('**Model**', models)
-        if any(keyword in model for keyword in HYBRID_MODELS):
+        if any(keyword in [model] for keyword in HYBRID_MODELS):
             st.session_state['reasoning_mode'] = st.toggle("Reasoning Mode", value=False, key="thinking")
+            st.write(st.session_state['reasoning_mode'])
+        else:
+            st.session_state['reasoning_mode'] = False
         runtime = ""
         tools = ""
         user_sess_id = get_session_ids_by_user(DYNAMODB_TABLE, st.session_state['userid'])
