@@ -294,9 +294,10 @@ def copy_s3_object(source_uri, dest_bucket, dest_key):
             'Key': source_key
         }
 
+        destination_key = f"{dest_key}/{os.path.basename(source_key)}"
         # Copy the object
-        s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=f"{dest_key}/{source_key}")
-        return f"s3://{dest_bucket}/{dest_key}/{source_key}"
+        s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=destination_key)
+        return f"s3://{dest_bucket}/{destination_key}"
 
     except ClientError as e:
         print(f"An error occurred: {e}")
@@ -1033,8 +1034,7 @@ def process_files(files):
             file_url = future_proxy_mapping[future]
             try:
                 result = future.result()
-                doc_name = os.path.basename(file_url)
-                result_string += f"<s3://{BUCKET}/{S3_DOC_CACHE_PATH}/{doc_name}>\n{result}\n</s3://{BUCKET}/{S3_DOC_CACHE_PATH}/{doc_name}>\n"
+                result_string += f"<{file_url}>\n{result}\n</{file_url}>\n"
             except Exception as e:
                 # Get the original function arguments from the Future object
                 error = {'file': file_url, 'error': str(e)}
