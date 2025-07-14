@@ -677,12 +677,12 @@ def copy_s3_object(source_uri, dest_bucket, dest_key):
             'Bucket': source_bucket,
             'Key': source_key
         }
-
+        destination_key = f"{dest_key}/{os.path.basename(source_key)}"
         # Copy the object
-        s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=f"{dest_key}/{source_key}")
+        s3.copy_object(CopySource=copy_source, Bucket=dest_bucket, Key=destination_key)
 
-        print(f"File copied from {source_uri} to s3://{dest_bucket}/{dest_key}/{source_key}")
-        return f"s3://{dest_bucket}/{dest_key}/{source_key}"
+        print(f"File copied from {source_uri} to s3://{dest_bucket}/{destination_key}")
+        return f"s3://{dest_bucket}/{destination_key}"
 
     except ClientError as e:
         print(f"An error occurred: {e}")
