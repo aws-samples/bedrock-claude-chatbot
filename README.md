@@ -197,11 +197,7 @@ To stop the `tmux` session, in your ec2 terminal Press `Ctrl+b`, then `d` to det
 ## Limitations and Future Updates
 1. **Pricing**: Pricing is only calculated for the Bedrock models not including cost of any other AWS service used. In addition, the pricing information of the models are stored in a static `pricing.json` file. Do manually update the file to refelct current [Bedrock pricing details](https://aws.amazon.com/bedrock/pricing/). Use this cost implementation in this app as a rough estimate of actual cost of interacting with the Bedrock models as actual cost reported in your account may differ.
 
-3. **Storage Encryption**: This application does not implement storing and reading files to and from S3 and/or DynamoDB using KMS keys for data at rest encryption.
-
-4. **Production-Ready**: For an enterprise and production-ready chatbot application architecture pattern, check out [Generative AI Application Builder on AWS](https://aws.amazon.com/solutions/implementations/generative-ai-application-builder-on-aws/) and [Bedrock-Claude-Chat](https://github.com/aws-samples/bedrock-claude-chat) for best practices and recommendations.
-
-5. **Tools Suite**: This application only includes a single tool. However, with the many niche applications of LLM's, a library of tools will make this application robust.
+2. **Tools Suite**: This application only includes a single tool. However, with the many niche applications of LLM's, a library of tools will make this application robust.
 
 ## Application Workflow Diagram
 
