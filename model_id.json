@@ -1,14 +1,16 @@
-{    
-    "sonnet-4": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "sonnet-3.7": "anthropic.claude-3-7-sonnet-20250219-v1:0",
-    "opus-4": "anthropic.claude-opus-4-20250514-v1:0",
-    "sonnet-3.5-v2": "anthropic.claude-3-5-sonnet-20241022-v2:0",    
-    "haiku-3.5": "anthropic.claude-3-5-haiku-20241022-v1:0",
-    "deepseek": "deepseek.r1-v1:0",
-    "nova-pro": "amazon.nova-pro-v1:0",
-    "nova-lite": "amazon.nova-lite-v1:0",
-    "nova-micro": "amazon.nova-micro-v1:0",
-    "nova-premier": "amazon.nova-premier-v1:0",
-    "meta-maverick": "meta.llama4-maverick-17b-instruct-v1:0",
-    "meta-scout": "meta.llama4-scout-17b-instruct-v1:0"
+{
+    "sonnet-5":     {"id": "anthropic.claude-sonnet-5", "engine": "runtime", "profile": "us", "reasoning": "adaptive", "vision": true, "tools": true},
+    "fable-5":      {"id": "anthropic.claude-fable-5", "engine": "runtime", "profile": "us", "reasoning": "adaptive", "vision": true, "tools": true},
+    "opus-5":       {"id": "anthropic.claude-opus-5", "engine": "runtime", "profile": "us", "reasoning": "adaptive", "vision": true, "tools": true},
+    "opus-4.8":     {"id": "anthropic.claude-opus-4-8", "engine": "runtime", "profile": "us", "reasoning": "adaptive", "vision": true, "tools": true},
+    "sonnet-4.6":   {"id": "anthropic.claude-sonnet-4-6", "engine": "runtime", "profile": "us", "reasoning": "adaptive", "vision": true, "tools": true},
+    "haiku-4.5":    {"id": "anthropic.claude-haiku-4-5-20251001-v1:0", "engine": "runtime", "profile": "us", "reasoning": "budget", "vision": true, "tools": true},
+    "deepseek-3.2": {"id": "deepseek.v3.2", "engine": "runtime", "profile": "", "reasoning": "config", "vision": false, "tools": true},
+    "kimi-2.5":     {"id": "moonshotai.kimi-k2.5", "engine": "runtime", "profile": "", "reasoning": "config", "vision": true, "tools": true},
+    "gpt-sol":      {"id": "openai.gpt-5.6-sol", "engine": "mantle-responses", "reasoning": "effort", "vision": true, "tools": true},
+    "gpt-terra":    {"id": "openai.gpt-5.6-terra", "engine": "mantle-responses", "reasoning": "effort", "vision": true, "tools": true},
+    "gpt-luna":     {"id": "openai.gpt-5.6-luna", "engine": "mantle-responses", "reasoning": "effort", "vision": true, "tools": true},
+    "gemma4-31b":   {"id": "google.gemma-4-31b", "engine": "mantle-responses", "reasoning": "effort", "vision": true, "tools": true},
+    "gemma4-26b":   {"id": "google.gemma-4-26b-a4b", "engine": "mantle-responses", "reasoning": "effort", "vision": true, "tools": true},
+    "glm-5":        {"id": "zai.glm-5", "engine": "mantle-chat", "reasoning": "effort", "vision": false, "tools": true}
 }

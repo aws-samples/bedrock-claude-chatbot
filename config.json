@@ -1,1 +1,27 @@
-{"DynamodbTable": "", "UserId": "user id", "Bucket_Name": "S3 bucket name (without s3:// prefix) to save uploaded files", "max-output-token":4000, "chat-history-loaded-length":10, "region":"aws region", "load-doc-in-chat-history":true, "AmazonTextract":false, "csv-delimiter":"|", "document-upload-cache-s3-path":"S3 prefix without trailing or foward slash at either ends", "AmazonTextract-result-cache":"S3 prefix without trailing or foward slash at either ends", "lambda-function":"lambda function name", "input_s3_path":"S3 prefix without trailing or foward slash at either ends","input_bucket":"S3 Bucket name (without s3:// prefix) to render files on app","input_file_ext":"csv,xlsx,parquet", "athena-work-group-name":"name of athena spark workgroup"}
+{
+    "DynamodbTable": "",
+    "UserId": "ucegbe",
+    "session-storage": "local",
+    "Bucket_Name": "mm-fsi-fix", 
+    "max-output-token":4000, 
+    "chat-history-loaded-length":70, 
+    "region":"us-east-1", 
+    "load-doc-in-chat-history":true, 
+    "AmazonTextract":true, 
+    "csv-delimiter":"|", 
+    "document-upload-cache-s3-path":"uploads", 
+    "AmazonTextract-result-cache":"textract", 
+    "input_s3_path":"input",
+    "input_bucket":"mm-fsi-fix",
+    "input_file_ext":"csv,xlsx,parquet",
+    "athena-work-group-name":"pyspark",
+    "data-analysis-model":"opus-4.8",
+    "code-interpreter-id":"test-y20M8PrsxO",
+    "code-interpreter-session-timeout":3600,
+    "worker-agent-model":"haiku-4.5",
+    "worker-agent-max-workers":6,
+    "agentcore-memory-id":"bedrock_chatbot_memory-WcQ0SB4a87",
+    "reasoning-effort":"medium",
+    "reasoning-max-tokens":{"low":15000,"medium":25000,"high":35000},
+    "reasoning-budget-tokens":{"low":5000,"medium":10000,"high":20000}
+}

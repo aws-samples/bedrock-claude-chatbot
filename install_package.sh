@@ -11,6 +11,10 @@ fi
 
 # Loop through each line in the requirements.txt file
 while IFS= read -r package || [ -n "$package" ]; do
+    # Skip blank lines and comments
+    case "$package" in
+        ""|\#*) continue ;;
+    esac
     # Install the package using pip
     echo "Installing $package"
     pip install "$package"

@@ -13,7 +13,6 @@ from openpyxl.cell import Cell
 import plotly.io as pio
 from openpyxl.worksheet.cell_range import CellRange
 from docx.table import _Cell
-from boto3.dynamodb.conditions import Key
 from pptx import Presentation
 from botocore.exceptions import ClientError
 from textractor import Textractor
@@ -32,11 +31,17 @@ from docx.table import Table as DocxTable
 import concurrent.futures
 from functools import partial
 import random
-from utils import function_calling_utils
+from agent.chat_agent import build_chat_agent, StreamlitCallbackHandler, SubAgentWorkingsPanel
+from agent.sessions import (wrap_attached_documents, read_display_history,
+                            list_user_sessions, dataset_uris_in_window,
+                            generated_uris_in_window)
+from agent.web_tools import WEB_TOOLS
+from agent.data_analysis import (AthenaSparkSessionManager, CodeSessionManager,
+                                 make_data_analysis_tool)
+from agent.doc_generator import make_document_generator_tool
+from agent.workers import make_worker_agents_tool
 from urllib.parse import urlparse
 import plotly.graph_objects as go
-import numpy as np
-import base64
 config = Config(
     read_timeout=600,  # Read timeout parameter
     retries=dict(
@@ -59,7 +64,6 @@ with open('model_id.json','r',encoding='utf-8') as f:
 DYNAMODB = boto3.resource('dynamodb')
 COGNITO = boto3.client('cognito-idp')
 S3 = boto3.client('s3')
-LOCAL_CHAT_FILE_NAME = "chat-history.json"
 DYNAMODB_TABLE = config_file["DynamodbTable"]
 BUCKET = config_file["Bucket_Name"]
 OUTPUT_TOKEN = config_file["max-output-token"]
@@ -74,12 +78,39 @@ CSV_SEPERATOR = config_file["csv-delimiter"]
 INPUT_BUCKET = config_file["input_bucket"]
 INPUT_S3_PATH = config_file["input_s3_path"]
 INPUT_EXT = tuple(f".{x}" for x in config_file["input_file_ext"].split(','))
+SESSION_STORAGE = config_file.get("session-storage", "local")  # local | s3 | dynamodb | agentcore
+# AgentCore Memory resource id (required when session-storage is "agentcore"); users
+# bring their own resource - creating one is out of the app's scope.
+AGENTCORE_MEMORY_ID = config_file.get("agentcore-memory-id", "")
+# Data-analysis sub-agent (agent-as-tool). Runtime "python" -> AgentCore Code
+# Interpreter; "pyspark" -> Athena for Apache Spark (workgroup must be PySpark engine v3).
+DATA_ANALYSIS_MODEL = config_file.get("data-analysis-model", "sonnet-4.6")
+CODE_INTERPRETER_ID = config_file.get("code-interpreter-id", "")
+CODE_INTERPRETER_TIMEOUT = config_file.get("code-interpreter-session-timeout", 3600)
+ATHENA_WORKGROUP = config_file.get("athena-work-group-name", "")
+# Worker-agent swarm ("Research Workers" tool): parallel ephemeral web-research agents
+WORKER_AGENT_MODEL = config_file.get("worker-agent-model", "haiku-4.5")
+WORKER_AGENT_MAX_WORKERS = config_file.get("worker-agent-max-workers", 6)
+# Capability lists are derived from the model registry (model_id.json specs) instead
+# of hand-maintained: reasoning dialect / vision / tool support live per-model there.
 MODEL_DISPLAY_NAME = list(model_info.keys())
-HYBRID_MODELS = ["sonnet-3.7", "sonnet-4", "opus-4"]  # populate with list of hybrid reasoning models on Bedrock
-NON_VISION_MODELS = ["deepseek", "haiku-3.5", "nova-micro"]  # populate with list of models not supporting image input on Bedrock
-NON_TOOL_SUPPORTING_MODELS = ["deepseek", "meta-scout", "meta-maverick"]  # populate with list of models not supporting tool calling on Bedrock
+HYBRID_MODELS = [k for k, v in model_info.items() if v.get("reasoning")]
+NON_VISION_MODELS = [k for k, v in model_info.items() if not v.get("vision", True)]
+NON_TOOL_SUPPORTING_MODELS = [k for k, v in model_info.items() if not v.get("tools", True)]
 
-bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name=REGION, config=config)
+# Orchestrator system prompts (all sub-agent prompts live in their agent/ modules)
+CHAT_SYSTEM_PROMPT = (
+    "You are a conversational AI assistant, proficient in delivering high-quality "
+    "responses and resolving tasks effectively. You are very attentive and respond "
+    "in markdown format."
+)
+DOC_CHAT_SYSTEM_PROMPT = (
+    "You are a conversational assistant, expert at providing quality and accurate "
+    "answers based on a document(s) and/or image(s) provided. You are very attentive "
+    "and respond in markdown format. Take your time to read through the document(s) "
+    "and/or image(s) carefully and pay attention to relevant areas pertaining to the "
+    "question(s). Once done reading, provide an answer to the user question(s)."
+)
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
@@ -87,8 +118,6 @@ if 'input_token' not in st.session_state:
     st.session_state['input_token'] = 0
 if 'output_token' not in st.session_state:
     st.session_state['output_token'] = 0
-if 'chat_hist' not in st.session_state:
-    st.session_state['chat_hist'] = []
 if 'user_sess' not in st.session_state:
     st.session_state['user_sess'] =str(time.time())
 if 'chat_session_list' not in st.session_state:
@@ -101,8 +130,58 @@ if 'cost' not in st.session_state:
     st.session_state['cost'] = 0
 if 'reasoning_mode' not in st.session_state:
     st.session_state['reasoning_mode'] = False  # Only activated when user selects anthropic 3.7 and toggles on thinking
-if 'athena-session' not in st.session_state:
-    st.session_state['athena-session'] = ""
+
+def compute_turn_cost(usage, prices, engine="runtime"):
+    """Dollar cost of one turn from strands' accumulated usage, cache-aware.
+
+    Only caching-capable models emit cacheReadInputTokens/cacheWriteInputTokens in
+    the strands usage object (the keys are absent otherwise), so cache pricing
+    applies exactly when the model reported cache traffic. Semantics differ by
+    engine and MUST NOT be mixed up:
+      - Bedrock Converse ("runtime"): cache tokens are reported SEPARATELY from
+        inputTokens -> all four terms are additive.
+      - OpenAI-style (Mantle engines): cached tokens are a SUBSET of inputTokens ->
+        carve them out of the input term before pricing, else they bill twice.
+    Models whose pricing entry lacks cache rates fall back to the input rate, so
+    reported cache traffic is never silently free.
+    """
+    input_tokens = usage.get("inputTokens", 0)
+    output_tokens = usage.get("outputTokens", 0)
+    cache_read = usage.get("cacheReadInputTokens", 0)
+    cache_write = usage.get("cacheWriteInputTokens", 0)
+
+    if engine != "runtime" and cache_read:
+        input_tokens = max(0, input_tokens - cache_read)
+
+    cost = input_tokens * prices["input"] + output_tokens * prices["output"]
+    if cache_read:
+        cost += cache_read * prices.get("cache_read", prices["input"])
+    if cache_write:
+        cost += cache_write * prices.get("cache_write", prices["input"])
+    return cost
+
+
+def presign_s3_uri(s3_uri, expires_in=3600):
+    """Presigned GET url for an s3:// uri. Minted at render time on every Streamlit
+    rerun, so displayed links are always freshly signed (no refresh button needed).
+    Note the effective lifetime is capped by the signing credentials' expiry."""
+    bucket_name, key = s3_uri.replace('s3://', '').split('/', 1)
+    return boto3.client('s3', region_name=REGION, config=config).generate_presigned_url(
+        'get_object', Params={'Bucket': bucket_name, 'Key': key}, ExpiresIn=expires_in)
+
+
+def render_artifacts_expander(doc_uris):
+    """The 'artifacts' expander under an assistant message: one presigned download
+    link per generated document."""
+    if not doc_uris:
+        return
+    with st.expander(label="**artifacts**"):
+        for uri in doc_uris:
+            try:
+                st.markdown(f"📄 [{os.path.basename(uri)}]({presign_s3_uri(uri)})")
+            except Exception:
+                st.markdown(f"📄 {os.path.basename(uri)} (link unavailable)")
+
 
 def get_object_with_retry(bucket, key):
     max_retries = 5
@@ -132,59 +211,13 @@ def get_object_with_retry(bucket, key):
 
     # If we reach this point, it means the maximum number of retries has been exceeded
     raise Exception(f"Failed to get object {key} from bucket {bucket} after {max_retries} retries.")
+def process_files(files, cutoff=None):
+    """process uploaded files in parallel.
 
-def decode_numpy_array(obj):
-    if isinstance(obj, dict) and 'dtype' in obj and 'bdata' in obj:
-        dtype = np.dtype(obj['dtype'])
-        return np.frombuffer(base64.b64decode(obj['bdata']), dtype=dtype)
-    return obj
-
-# Decode the numpy arrays in the JSON data
-def decode_json(obj):
-    if isinstance(obj, dict):
-        return {k: decode_json(decode_numpy_array(v)) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [decode_json(item) for item in obj]
-    return obj
-
-def save_chat_local(file_path, new_data, session_id):
-    """Store long term chat history Local Disk"""   
-    try:
-        # Read the existing JSON data from the file
-        with open(file_path, "r",encoding='utf-8') as file:
-            existing_data = json.load(file)
-        if session_id not in existing_data:
-            existing_data[session_id]=[]
-    except FileNotFoundError:
-        # If the file doesn't exist, initialize an empty list
-        existing_data = {session_id:[]}
-    # Append the new data to the existing list
-    from decimal import Decimal
-    data = [{k: float(v) if isinstance(v, Decimal) else v for k, v in item.items()} for item in new_data]
-    existing_data[session_id].extend(data)
-
-    # Write the updated list back to the JSON file
-    with open(file_path, "w",encoding="utf-8") as file:
-        json.dump(existing_data, file)
-        
-def load_chat_local(file_path,session_id):
-    """Load long term chat history from Local"""   
-    try:
-        # Read the existing JSON data from the file
-        with open(file_path, "r",encoding='utf-8') as file:
-            existing_data = json.load(file)
-            if session_id in existing_data:
-                existing_data=existing_data[session_id]
-            else:
-                existing_data=[]
-    except FileNotFoundError:
-        # If the file doesn't exist, initialize an empty list
-        existing_data = []
-    return existing_data
-    
-    
-def process_files(files):
-    """process uploaded files in parallel"""
+    cutoff: max rows of tabular files (csv/xlsx) to inject into the conversation;
+        None injects everything. Used when the Advanced Data Analytics tool is
+        active - the sub-agent reads the FULL file from S3, so the conversation
+        only needs a schema preview."""
     result_string=""
     errors = []
     future_proxy_mapping = {} 
@@ -192,7 +225,7 @@ def process_files(files):
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
         # Partial function to pass the handle_doc_upload_or_s3 function
-        func = partial(handle_doc_upload_or_s3)   
+        func = partial(handle_doc_upload_or_s3, cutoff=cutoff)   
         for file in files:
             future = executor.submit(func, file)
             future_proxy_mapping[future] = file
@@ -224,7 +257,7 @@ def handle_doc_upload_or_s3(file, cutoff=None):
     elif  ".json"==ext.lower():      
         obj=get_s3_obj_from_bucket_(file)
         content = json.loads(obj['Body'].read())  
-    elif  ext.lower() in [".txt",".py"]:       
+    elif  ext.lower() in [".txt", ".py", ".md"]:       
         obj=get_s3_obj_from_bucket_(file)
         content = obj['Body'].read()
     elif ".docx" == ext.lower():       
@@ -262,8 +295,11 @@ def parse_csv_from_s3(s3_uri, cutoff):
         encoding = detect_encoding(s3_uri)        
         # Sniff the delimiter and read the CSV file
         df = pd.read_csv(s3_uri, delimiter=None, engine='python', encoding=encoding)
-        if cutoff:
-            df=df.iloc[:20]
+        if cutoff and len(df) > cutoff:
+            total = len(df)
+            return (df.iloc[:cutoff].to_csv(index=False, sep=CSV_SEPERATOR)
+                    + f"\n[PREVIEW: first {cutoff} of {total} rows. The data-analysis "
+                    "tool has access to the complete file.]\n")
         return df.to_csv(index=False, sep=CSV_SEPERATOR)
     except Exception as e:
         raise InvalidContentError(f"Error: {e}")
@@ -493,12 +529,15 @@ def table_parser_openpyxl(file, cutoff):
             # Convert sheet data to a DataFrame
             df = pd.DataFrame(worksheet.values)
             df = df.map(strip_newline)
-            if cutoff:
-                df = df.iloc[:20]
+            preview_note = ""
+            if cutoff and len(df) > cutoff:
+                preview_note = (f"\n[PREVIEW: first {cutoff} of {len(df)} rows. The "
+                                "data-analysis tool has access to the complete file.]\n")
+                df = df.iloc[:cutoff]
 
             # Convert to string and tag by sheet name
             tabb=df.to_csv(sep=CSV_SEPERATOR, index=False, header=0)
-            all_sheets_string+=f'<{sheet_name}>\n{tabb}\n</{sheet_name}>\n'
+            all_sheets_string+=f'<{sheet_name}>\n{tabb}{preview_note}\n</{sheet_name}>\n'
         return all_sheets_string
     else:
         raise Exception(f"{file} not formatted as an S3 path")
@@ -523,11 +562,14 @@ def calamaine_excel_engine(file,cutoff):
             sheet = workbook.get_sheet_by_name(sheet_name)
             df = pd.DataFrame(sheet.to_python(skip_empty_area=False))
             df = df.map(strip_newline)
-            if cutoff:
-                df = df.iloc[:20]
+            preview_note = ""
+            if cutoff and len(df) > cutoff:
+                preview_note = (f"\n[PREVIEW: first {cutoff} of {len(df)} rows. The "
+                                "data-analysis tool has access to the complete file.]\n")
+                df = df.iloc[:cutoff]
             # print(df)
             tabb = df.to_csv(sep=CSV_SEPERATOR, index=False, header=0)
-            all_sheets_string += f'<{sheet_name}>\n{tabb}\n</{sheet_name}>\n'
+            all_sheets_string += f'<{sheet_name}>\n{tabb}{preview_note}\n</{sheet_name}>\n'
         return all_sheets_string
     else:
         raise Exception(f"{file} not formatted as an S3 path")
@@ -544,82 +586,6 @@ def table_parser_utills(file,cutoff):
             return calamaine_excel_engine(file, cutoff)
         except Exception as e:
             raise Exception(str(e))
-
-
-def put_db(params,messages):
-    """Store long term chat history in DynamoDB"""    
-    chat_item = {
-        "UserId": st.session_state['userid'], # user id
-        "SessionId": params["session_id"], # User session id
-        "messages": [messages],  # 'messages' is a list of dictionaries
-        "time":messages['time']
-    }
-
-    existing_item = DYNAMODB.Table(DYNAMODB_TABLE).get_item(Key={"UserId": st.session_state['userid'], "SessionId":params["session_id"]})
-    if "Item" in existing_item:
-        existing_messages = existing_item["Item"]["messages"]
-        chat_item["messages"] = existing_messages + [messages]
-    response = DYNAMODB.Table(DYNAMODB_TABLE).put_item(
-        Item=chat_item
-    )
-    
-    
-def get_chat_history_db(params,cutoff,vision_model):
-    """process chat histories from local or DynamoDb to format expected by model input"""
-    current_chat, chat_hist = [], []
-    if params['chat_histories'] and cutoff != 0: 
-        chat_hist = params['chat_histories'][-cutoff:]
-        for d in chat_hist:
-            if d['image'] and vision_model and LOAD_DOC_IN_ALL_CHAT_CONVO:
-                content = []
-                for img in d['image']:
-                    s3 = boto3.client('s3')
-                    match = re.match("s3://(.+?)/(.+)", img)
-                    image_name = os.path.basename(img)
-                    _, ext = os.path.splitext(image_name)
-                    if "jpg" in ext:
-                        ext = ".jpeg"
-                    # if match:
-                    bucket_name = match.group(1)
-                    key = match.group(2)    
-                    obj = s3.get_object(Bucket=bucket_name, Key=key)
-                    bytes_image = obj['Body'].read()            
-                    content.extend([{"text": image_name}, {
-                      "image": {
-                        "format": f"{ext.lower().replace('.','')}",
-                        "source": {"bytes": bytes_image}
-                      }
-                    }])
-                content.extend([{"text":d['user']}])
-                current_chat.append({'role': 'user', 'content': content})
-            elif d['document'] and LOAD_DOC_IN_ALL_CHAT_CONVO:
-                # Handle scenario where tool is used for dataset that is out of context for the model context length
-                if 'tool_use_id' in d and d['tool_use_id']:
-                    doc = 'Here are the documents:\n'
-                    for docs in d['document']:     
-                        uploads = handle_doc_upload_or_s3(docs,20)
-                        doc_name = os.path.basename(docs)
-                        doc += f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
-                else:
-                    doc = 'Here are the documents:\n'
-                    for docs in d['document']:
-                        uploads = handle_doc_upload_or_s3(docs)
-                        doc_name = os.path.basename(docs)
-                        doc += f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
-                if not vision_model and d["image"]:
-                    for docs in d['image']:
-                        uploads = handle_doc_upload_or_s3(docs)
-                        doc_name = os.path.basename(docs)
-                        doc += f"<{doc_name}>\n{uploads}\n</{doc_name}>\n"
-                current_chat.append({'role': 'user', 'content': [{"text": doc+d['user']}]})
-            else:
-                current_chat.append({'role': 'user', 'content': [{"text": d['user']}]})
-            current_chat.append({'role': 'assistant', 'content': [{"text": d['assistant']}]})
-    else:
-        chat_hist = []
-    return current_chat, chat_hist
-
-  
 def get_s3_keys(prefix):
     """list all keys in an s3 path"""
     s3 = boto3.client('s3')
@@ -731,180 +697,59 @@ def get_s3_obj_from_bucket_(file):
         obj = s3.get_object(Bucket=bucket_name, Key=key)  
     return obj
 
-def put_obj_in_s3_bucket_(docs):
+def put_obj_in_s3_bucket_(docs, key_prefix=S3_DOC_CACHE_PATH):
+    """Cache an uploaded file (or copy an existing s3 object) under key_prefix.
+
+    key_prefix is session-scoped by the caller (uploads/<session_id>) so files with
+    the same name from different sessions don't overwrite each other in the cache.
+    """
     if isinstance(docs,str):
         s3_uri_pattern = r'^s3://([^/]+)/(.*?([^/]+)/?)$'
         if bool(re.match(s3_uri_pattern,  docs)):
-            file_uri=copy_s3_object(docs, BUCKET, S3_DOC_CACHE_PATH)
+            file_uri=copy_s3_object(docs, BUCKET, key_prefix)
             return file_uri
     else:
         file_name = os.path.basename(docs.name)
-        file_path = f"{S3_DOC_CACHE_PATH}/{file_name}"
+        file_path = f"{key_prefix}/{file_name}"
         S3.put_object(Body=docs.read(), Bucket= BUCKET, Key=file_path)
         return f"s3://{BUCKET}/{file_path}"
 
 
-def bedrock_streemer(params,response, handler):
-    """ stream response from bedrock Runtime"""
-    text = ''
-    think = ""
-    signature = ""
-    for chunk in response['stream']:    
-        if 'contentBlockDelta' in chunk:
-            delta = chunk['contentBlockDelta']['delta']       
-            # print(chunk)
-            if 'text' in delta:
-                text += delta['text']
-                handler.markdown(text.replace("$", "\\$"), unsafe_allow_html=True)
-            if 'reasoningContent' in delta:
-                if "text" in delta['reasoningContent']:
-                    think += delta['reasoningContent']['text']                    
-                    handler.markdown('**MODEL REASONING**\n\n' + think.replace("$", "\\$"), unsafe_allow_html=True)
-                elif "signature" in delta['reasoningContent']:
-                    signature = delta['reasoningContent']['signature']
-    
-        elif "metadata" in chunk:
-            if 'cacheReadInputTokens' in chunk['metadata']['usage']:
-                print(f"\nCache Read Tokens: {chunk['metadata']['usage']['cacheReadInputTokens']}")
-                print(f"Cache Write Tokens: {chunk['metadata']['usage']['cacheWriteInputTokens']}")
-            st.session_state['input_token'] = chunk['metadata']['usage']["inputTokens"]
-            st.session_state['output_token'] = chunk['metadata']['usage']["outputTokens"]
-            latency = chunk['metadata']['metrics']["latencyMs"]        
-            pricing = st.session_state['input_token']*pricing_file[f"{params['model']}"]["input"] + st.session_state['output_token'] * pricing_file[f"{params['model']}"]["output"]
-            st.session_state['cost']+=pricing 
-            print(f"\nInput Tokens: {st.session_state['input_token']}\nOutput Tokens: {st.session_state['output_token']}\nLatency: {latency}ms")
-    return text, think
-
-def bedrock_claude_(params, chat_history, system_message, prompt,
-                    model_id, image_path=None, handler=None):
-    """ format user request and chat history and make a call to Bedrock Runtime"""
-    chat_history_copy = chat_history[:]
+def image_blocks_from_s3(image_paths):
+    """Load s3 images (or plotly json rendered to png) as Converse image content blocks"""
     content = []
-    if image_path:
-        if not isinstance(image_path, list):
-            image_path = [image_path]
-        for img in image_path:
-            s3 = boto3.client('s3', region_name=REGION)
-            match = re.match("s3://(.+?)/(.+)", img)
-            image_name = os.path.basename(img)
-            _, ext = os.path.splitext(image_name)
-            if "jpg" in ext:
-                ext = ".jpeg"
-            bucket_name = match.group(1)
-            key = match.group(2)
-            if ".plotly" in key:
-                print(key)
-                bytes_image = plotly_to_png_bytes(img)
-                ext = ".png"
-            else:
-                obj = s3.get_object(Bucket=bucket_name, Key=key)
-                bytes_image = obj['Body'].read()
-            content.extend([{"text":image_name},{
-                             "image": {
-                                        "format": f"{ext.lower().replace('.', '')}",
-                                        "source": {"bytes": bytes_image}
-                                      }
-                        }])
-
-    content.append({       
-        "text": prompt
-            })
-    chat_history_copy.append({"role": "user",
-                              "content": content})
-    system_message = [{"text": system_message}]
-
-    if st.session_state['reasoning_mode']:
-        response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,
-                                                   inferenceConfig={"maxTokens": 18000, "temperature": 1},
-                                                   system=system_message, 
-                                                   additionalModelRequestFields={"thinking": {"type": "enabled", "budget_tokens": 10000}}
-                                                  )
-    else:
-        response = bedrock_runtime.converse_stream(messages=chat_history_copy, modelId=model_id,
-                                                   inferenceConfig={"maxTokens": 4000 if "deepseek" not in model_id else 20000,
-                                                                    "temperature": 0.5 if "deepseek" not in model_id else 0.6,
-                                                                   },
-                                                   system=system_message,
-                                                  )
-    answer, think=bedrock_streemer(params, response, handler)
-    return answer, think
-
-def _invoke_bedrock_with_retries(params, current_chat, chat_template, question, model_id, image_path, handler):
-    max_retries = 10
-    backoff_base = 2
-    max_backoff = 3  # Maximum backoff time in seconds
-    retries = 0
-
-    while True:
-        try:
-            response, think = bedrock_claude_(params,current_chat, chat_template, question, model_id, image_path, handler)
-            return response, think
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ThrottlingException':
-                if retries < max_retries:
-                    # Throttling, exponential backoff
-                    sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
-                    time.sleep(sleep_time)
-                    retries += 1
-                else:
-                    raise e
-            elif e.response['Error']['Code'] == 'ModelStreamErrorException':
-                if retries < max_retries:
-                    # Throttling, exponential backoff
-                    sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
-                    time.sleep(sleep_time)
-                    retries += 1
-                else:
-                    raise e
-            elif e.response['Error']['Code'] == 'EventStreamError':
-                if retries < max_retries:
-                    # Throttling, exponential backoff
-                    sleep_time = min(max_backoff, backoff_base ** retries + random.uniform(0, 1))
-                    time.sleep(sleep_time)
-                    retries += 1
-                else:
-                    raise e
-            else:
-                # Some other API error, rethrow
-                raise
-
+    s3 = boto3.client('s3', region_name=REGION)
+    for img in image_paths:
+        match = re.match("s3://(.+?)/(.+)", img)
+        image_name = os.path.basename(img)
+        _, ext = os.path.splitext(image_name)
+        if "jpg" in ext:
+            ext = ".jpeg"
+        bucket_name = match.group(1)
+        key = match.group(2)
+        if ".plotly" in key:
+            bytes_image = plotly_to_png_bytes(img)
+            ext = ".png"
+        else:
+            obj = s3.get_object(Bucket=bucket_name, Key=key)
+            bytes_image = obj['Body'].read()
+        content.extend([{"text": image_name}, {
+            "image": {
+                "format": f"{ext.lower().replace('.', '')}",
+                "source": {"bytes": bytes_image}
+            }
+        }])
+    return content
 def get_session_ids_by_user(table_name, user_id):
     """
-    Get Session Ids and corresponding top message for a user to populate the chat history drop down on the front end
+    Get Session Ids and corresponding top message for a user to populate the chat
+    history drop down on the front end. Reconstructed from the configured Strands
+    session backend (local | s3 | dynamodb).
     """
-    if DYNAMODB_TABLE:
-        table = DYNAMODB.Table(table_name)
-        message_list = {}
-        session_ids = []
-        args = {
-            'KeyConditionExpression': Key('UserId').eq(user_id)
-        }
-        while True:
-            response = table.query(**args)
-            session_ids.extend([item['SessionId'] for item in response['Items']])
-            if 'LastEvaluatedKey' not in response:
-                break
-            args['ExclusiveStartKey'] = response['LastEvaluatedKey']
-
-        for session_id in session_ids:
-            try:
-                message_list[session_id] = DYNAMODB.Table(table_name).get_item(Key={"UserId": user_id, "SessionId": session_id})['Item']['messages'][0]['user']
-            except Exception as e:
-                print(e)
-                pass
-    else:
-        try:
-            message_list={}
-            # Read the existing JSON data from the file
-            with open(LOCAL_CHAT_FILE_NAME, "r", encoding='utf-8') as file:
-                existing_data = json.load(file)
-            for session_id in existing_data:
-                message_list[session_id]=existing_data[session_id][0]['user']
-            
-        except FileNotFoundError:
-            # If the file doesn't exist, initialize an empty list
-            message_list = {}
-    return message_list
+    return list_user_sessions(
+        SESSION_STORAGE, user_id=user_id, bucket=BUCKET, region=REGION,
+        dynamodb_table=table_name, agentcore_memory_id=AGENTCORE_MEMORY_ID,
+    )
 
 def list_csv_xlsx_in_s3_folder(bucket_name, folder_path):
     """
@@ -943,7 +788,7 @@ def list_csv_xlsx_in_s3_folder(bucket_name, folder_path):
         print(f"An error occurred: {e}")
         return []
 
-def query_llm(params, handler):
+def query_llm(params, handler, workings_slot=None):
     """
     Handles users requests and routes to a native call or tool use, then stores sonversation to local or DynamoDB
     """  
@@ -952,226 +797,329 @@ def query_llm(params, handler):
         raise TypeError("documents must be in a list format")
 
     vision_model = True
-    model = 'us.' + model_info[params['model']]
+    # display name goes straight to build_chat_agent; resolve_model routes it to the
+    # right provider (runtime Converse vs Mantle OpenAI) using the registry spec
+    model = params['model']
     if any(keyword in [params['model']] for keyword in NON_VISION_MODELS):
         vision_model = False
+
+    # Streaming/activity renderer for the whole turn. Created BEFORE attachment
+    # ingestion so uploads and text extraction (Textract can take a while) show a
+    # live activity line instead of a blank bubble; the line is replaced as soon as
+    # model output starts streaming, same as the tool spinners.
+    stream_handler = StreamlitCallbackHandler(handler)
 
     # prompt template for when a user uploads a doc
     doc_path = []
     image_path = []
     full_doc_path = []
     doc = ""
-    if params['tools']:
-        messages, tool, results, image_holder, doc_list, stop_reason, plotly_fig = function_calling_utils.function_caller_claude_(params, handler)
-        if stop_reason != "tool_use":
-            return messages
-        elif stop_reason == "tool_use":
-            prompt = f"""You are a conversational AI Assitant. 
-I will provide you with an question on a dataset, a python code that implements the solution to the question and the result of that code solution.
-Here is the question:
-<question>
-{params['question']}
-</question>
+    if params['upload_doc'] or params['s3_objects']:
+        # session-scope the upload cache so same-named files from different
+        # sessions don't collide in s3
+        upload_prefix = f"{S3_DOC_CACHE_PATH}/{params['session_id']}"
+        n_files = len(params['upload_doc'] or []) + len(params['s3_objects'] or [])
+        uploaded = 0
+        if params['upload_doc']:
+            for ids, docs in enumerate(params['upload_doc']):
+                file_name = docs.name
+                uploaded += 1
+                stream_handler.status(f"📤 Uploading {file_name} ({uploaded}/{n_files})…")
+                _, extensions = os.path.splitext(file_name)
+                docs = put_obj_in_s3_bucket_(docs, upload_prefix)
+                full_doc_path.append(docs)
+                if extensions.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"] and vision_model:
+                    image_path.append(docs)
+                    continue
 
-Here is the python code:
-<python>
-{tool['input']['code']}
-</python>
+        if params['s3_objects']:
+            for ids, docs in enumerate(params['s3_objects']):
+                file_name = docs
+                uploaded += 1
+                stream_handler.status(f"📤 Staging {file_name} ({uploaded}/{n_files})…")
+                _, extensions = os.path.splitext(file_name)
+                docs = put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}", upload_prefix)
+                full_doc_path.append(docs)
+                if extensions.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"] and vision_model:
+                    image_path.append(docs)
+                    continue
 
-Here the result of the code:
-<result>
-{results}
-</result>
-
-After reading the user question, respond with a detailed analytical answer based entirely on the result from the code. Do NOT make up answers. 
-When providing your respons:
-- Do not include any preamble, go straight to the answer.
-- It should not be obvious you are referencing the result."""
- 
-            system_message="You always provide your response in a well presented format using markdown. Make use of tables, list etc. where necessary in your response, so information is well preseneted and easily read."
-            answer, think = _invoke_bedrock_with_retries(params, [], system_message, prompt, model, image_holder, handler)
-
-            chat_history = {
-                "user": results["text"] if "text" in results else "",
-                "assistant": answer,
-                "image": image_holder,
-                "document": [],  # data_file,#doc_list,
-                "plotly": plotly_fig,
-                "modelID": model,
-                "thinking": think,
-                "code": tool['input']['code'],
-                "time": str(time.time()),
-                "input_token": round(st.session_state['input_token']) ,
-                "output_token": round(st.session_state['output_token']),
-                "tool_result_id": tool['toolUseId'],
-                "tool_name": '',
-                "tool_params": ''
-            }
-            # store convsation memory in DynamoDB table
-            if DYNAMODB_TABLE:
-                put_db(params, chat_history)
-            # use local disk for storage
-            else:
-                save_chat_local(LOCAL_CHAT_FILE_NAME, [chat_history], params["session_id"])
-            return answer
+        doc_path = [item for item in full_doc_path if item not in image_path]
+        if doc_path:
+            names = ", ".join(os.path.basename(p) for p in doc_path)
+            stream_handler.status(f"📄 Processing attachment(s): {names[:120]}…")
+        # With the data-analysis tool active, inject only a 10-row preview of tabular
+        # files (csv/xlsx) - enough schema/flavor for the orchestrator to converse and
+        # write good analysis briefs, while the sub-agent reads the FULL file from S3
+        # in its sandbox. Non-tabular formats are always injected in full; without the
+        # tool, full injection is the only way the model sees the data at all.
+        tabular_cutoff = 10 if "Advanced Data Analytics" in params['tools'] else None
+        errors, result_string = process_files(doc_path, cutoff=tabular_cutoff)
+        if errors:
+            st.error(errors)
+        # Wrap injected docs in a sentinel so the clean question can be recovered
+        # from the persisted message for display (see agent/sessions.py).
+        doc = wrap_attached_documents(result_string)
+        chat_template = DOC_CHAT_SYSTEM_PROMPT
+        # When tabular attachments were truncated to previews, tell the orchestrator
+        # up front in the system prompt: previews are for schema/context only - any
+        # computation over the data must go through the data_analysis tool.
+        if tabular_cutoff and "[PREVIEW: first" in result_string:
+            chat_template += (
+                "\n\nNote: attached tabular files (CSV/Excel) are shown as PREVIEWS "
+                f"(first {tabular_cutoff} rows) marked with a [PREVIEW: ...] line - "
+                "the full datasets are larger. Use the previews only to understand "
+                "schema and content. For ANY computation, aggregation, filtering or "
+                "chart over the data, use the data_analysis tool, which reads the "
+                "complete file; never compute answers from the preview rows alone."
+            )
     else:
-        current_chat, chat_hist = get_chat_history_db(params, CHAT_HISTORY_LENGTH, vision_model)
-        if params['upload_doc'] or params['s3_objects']:
-            if params['upload_doc']:  
-                doc = 'I have provided documents and/or images.\n'
-                for ids, docs in enumerate(params['upload_doc']):
-                    file_name = docs.name
-                    _, extensions = os.path.splitext(file_name)
-                    docs = put_obj_in_s3_bucket_(docs)
-                    full_doc_path.append(docs)
-                    if extensions.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"] and vision_model:
-                        image_path.append(docs)
-                        continue
-    
-            if params['s3_objects']:
-                doc = 'I have provided documents and/or images.\n'
-                for ids, docs in enumerate(params['s3_objects']):
-                    file_name = docs
-                    _, extensions = os.path.splitext(file_name)
-                    docs = put_obj_in_s3_bucket_(f"s3://{INPUT_BUCKET}/{INPUT_S3_PATH}/{docs}")
-                    full_doc_path.append(docs)
-                    if extensions.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"] and vision_model:
-                        image_path.append(docs)
-                        continue
+        chat_template = CHAT_SYSTEM_PROMPT
 
-            doc_path = [item for item in full_doc_path if item not in image_path]
-            errors, result_string = process_files(doc_path)
-            if errors:
-                st.error(errors)
-            doc += result_string
-            with open("prompt/doc_chat.txt", "r", encoding="utf-8") as f:
-                chat_template = f.read()
-        else:
-            # Chat template for open ended query
-            with open("prompt/chat.txt", "r", encoding="utf-8") as f:
-                chat_template = f.read()
+    # Preprocessed docs are injected into the user turn; images ride as content blocks
+    content = image_blocks_from_s3(image_path) if image_path else []
+    content.append({"text": doc + params['question']})
 
-        response, think = _invoke_bedrock_with_retries(params, current_chat, chat_template,
-                                                       doc+params['question'], model,
-                                                       image_path, handler)
-        # log the following items to dynamodb
-        chat_history = {
-            "user": params['question'],
-            "assistant": response,
-            "image": image_path,
-            "document": doc_path,
-            "modelID": model,
-            "thinking": think,
-            "time": str(time.time()),
-            "input_token": round(st.session_state['input_token']),
-            "output_token": round(st.session_state['output_token'])
-        }
-        # store convsation memory and user other items in DynamoDB table
-        if DYNAMODB_TABLE:
-            put_db(params, chat_history)
-        # use local memory for storage
+    # Enable web tools for this turn if the user selected "Web Search" in the sidebar
+    agent_tools = list(WEB_TOOLS) if "Web Search" in params['tools'] else []
+
+    # Worker-agent swarm: parallel ephemeral web-research agents the orchestrator
+    # can delegate self-contained subtasks to. Stateless; progress is line-per-worker
+    # in the activity spinner (no per-worker output streaming - it would interleave).
+    if "Research Workers" in params['tools']:
+        agent_tools.append(make_worker_agents_tool(
+            model_id=WORKER_AGENT_MODEL,
+            region=REGION,
+            max_workers=WORKER_AGENT_MAX_WORKERS,
+            status_fn=stream_handler.status,
+        ))
+
+    # Data-analysis agent-as-tool: an ephemeral sub-agent that writes & runs code in a
+    # sandbox picked by the sidebar Runtime slider — "python" = AgentCore Code
+    # Interpreter, "pyspark" = Athena for Apache Spark (PySpark engine v3). The
+    # execution session and the sub-agent message history are cached per (chat
+    # session, engine) so dataframes/context survive turns but never leak across
+    # engines (the two sandboxes have different environments and prompts).
+    da_sink = {"image_output": [], "plotly": [], "doc_output": []}
+    # Datasets offered to the DA/docgen sub-agents: this turn's attachments now,
+    # extended IN PLACE after the agent is built with previously attached docs
+    # still visible in the conversation window (see dataset_uris_in_window). The
+    # tool closures hold this list by reference and read it at invocation time.
+    da_datasets = list(doc_path)
+    if "Advanced Data Analytics" in params['tools']:
+        da_engine = params.get("engine") or "python"
+        da_prefix = f"{S3_DOC_CACHE_PATH}/{params['session_id']}"
+        if da_engine == "pyspark" and not ATHENA_WORKGROUP:
+            st.error("The pyspark runtime requires 'athena-work-group-name' in config.json")
+        elif da_engine != "pyspark" and not CODE_INTERPRETER_ID:
+            st.error("Advanced Data Analytics requires 'code-interpreter-id' in config.json")
         else:
-            save_chat_local(LOCAL_CHAT_FILE_NAME, [chat_history], params["session_id"])
-        return response
+            da_key = f"{params['session_id']}:{da_engine}"
+            da_state = st.session_state.setdefault('data_analysis', {})
+            entry = da_state.get(da_key)
+            if entry is None:
+                if da_engine == "pyspark":
+                    da_session = AthenaSparkSessionManager(
+                        REGION, ATHENA_WORKGROUP, bucket=BUCKET, prefix=da_prefix)
+                else:
+                    da_session = CodeSessionManager(
+                        REGION, CODE_INTERPRETER_ID,
+                        timeout_seconds=CODE_INTERPRETER_TIMEOUT)
+                entry = {"session": da_session, "store": {"messages": []}}
+                da_state[da_key] = entry
+            da_model_id = DATA_ANALYSIS_MODEL
+            da_vision = not any(k in [DATA_ANALYSIS_MODEL] for k in NON_VISION_MODELS)
+            da_panel = (SubAgentWorkingsPanel(workings_slot, "🔬 Agent workings")
+                        if workings_slot is not None else None)
+            agent_tools.append(make_data_analysis_tool(
+                dataset_uris=da_datasets,
+                model_id=da_model_id,
+                region=REGION,
+                bucket=BUCKET,
+                upload_prefix=da_prefix,
+                session=entry["session"],
+                artifact_sink=da_sink,
+                message_store=entry["store"],
+                vision=da_vision,
+                status_fn=stream_handler.status,
+                workings_panel=da_panel,
+            ))
+
+    # Document-generator agent-as-tool: its own interpreter session + message store
+    # (cached under the "docgen" key), sharing the DA model and the per-turn artifact
+    # sink - generated files land in doc_output and render in the artifacts expander.
+    dg_generated = []  # generated-artifact registry; filled after the agent is built
+    if "Document Generator" in params['tools']:
+        if not CODE_INTERPRETER_ID:
+            st.error("Document Generator requires 'code-interpreter-id' in config.json")
+        else:
+            # artifacts get their own prefix so an edit saved under an attached
+            # file's basename can never overwrite the cached original attachment
+            dg_prefix = f"{S3_DOC_CACHE_PATH}/{params['session_id']}/artifacts"
+            dg_key = f"{params['session_id']}:docgen"
+            da_state = st.session_state.setdefault('data_analysis', {})
+            dg_entry = da_state.get(dg_key)
+            if dg_entry is None:
+                dg_entry = {
+                    "session": CodeSessionManager(REGION, CODE_INTERPRETER_ID,
+                                                  timeout_seconds=CODE_INTERPRETER_TIMEOUT),
+                    "store": {"messages": []},
+                }
+                da_state[dg_key] = dg_entry
+            dg_model_id = DATA_ANALYSIS_MODEL
+            dg_panel = (SubAgentWorkingsPanel(workings_slot, "📄 Agent workings")
+                        if workings_slot is not None else None)
+            agent_tools.append(make_document_generator_tool(
+                model_id=dg_model_id,
+                region=REGION,
+                bucket=BUCKET,
+                upload_prefix=dg_prefix,
+                available_uris=da_datasets,
+                generated_uris=dg_generated,
+                session=dg_entry["session"],
+                artifact_sink=da_sink,
+                message_store=dg_entry["store"],
+                status_fn=stream_handler.status,
+                workings_panel=dg_panel,
+            ))
+    chat_agent = build_chat_agent(
+        model_id=model,
+        region=REGION,
+        session_id=params["session_id"],
+        session_storage=SESSION_STORAGE,
+        system_prompt=chat_template,
+        history_window=CHAT_HISTORY_LENGTH * 2,  # config counts QA pairs; window counts messages
+        reasoning=st.session_state['reasoning_mode'],
+        max_tokens=OUTPUT_TOKEN,
+        user_id=st.session_state['userid'],
+        bucket=BUCKET,
+        dynamodb_table=DYNAMODB_TABLE,
+        agentcore_memory_id=AGENTCORE_MEMORY_ID,
+        tools=agent_tools,
+        callback_handler=stream_handler,
+    )
+    # Extend the sub-agents' dataset list with previously attached docs whose
+    # content is still visible in the restored window (turn_meta holds their uris).
+    # In-place so the already-built tool closures see the additions.
+    prior_meta = chat_agent.state.get("turn_meta") or {}
+    for uri in dataset_uris_in_window(chat_agent.messages, prior_meta):
+        if uri not in da_datasets and uri.lower().endswith(INPUT_EXT):
+            da_datasets.append(uri)
+    # ...and the docgen registry with generated artifacts still referenced in the
+    # window (their [generated artifacts: ...] markers), so edit requests survive
+    # restarts. In-place: the docgen closure holds dg_generated by reference.
+    dg_generated.extend(generated_uris_in_window(chat_agent.messages, prior_meta))
+
+    try:
+        result = chat_agent(content)
+    except Exception as e:
+        # A failed/stalled model stream must not leave the UI stuck: stop late
+        # worker-thread writes to the placeholder, surface the error, end the turn
+        # cleanly. The turn's user message may already be persisted - harmless, the
+        # next turn continues the conversation (verified).
+        stream_handler.close()
+        st.error(f"Model call failed: {type(e).__name__}: {e}")
+        return ("Sorry - the model call failed before completing "
+                f"({type(e).__name__}). Please try again.")
+    finally:
+        stream_handler.close()
+    response = str(result)
+
+    usage = result.metrics.accumulated_usage
+    st.session_state['input_token'] = usage.get("inputTokens", 0)
+    st.session_state['output_token'] = usage.get("outputTokens", 0)
+    turn_cost = compute_turn_cost(
+        usage, pricing_file[params['model']],
+        engine=model_info[params['model']].get("engine", "runtime"))
+    st.session_state['cost'] += turn_cost
+
+    # Persist the un-reconstructable per-turn metadata (model id, cost, and the
+    # s3 uris of attachments for the citations dropdown) in agent.state, keyed by
+    # the assistant message id. Everything else (text, thinking, tokens, timestamps)
+    # is read back from the persisted messages themselves.
+    assistant_message_id = chat_agent._session_manager._latest_agent_message[chat_agent.agent_id].message_id
+    turn_meta = chat_agent.state.get("turn_meta") or {}
+    turn_meta[str(assistant_message_id)] = {
+        "model": params['model'],
+        "modelID": model,
+        "cost": turn_cost,
+        "documents": doc_path,
+        "images": image_path,
+        # data-analysis artifacts (chart/plotly s3 uris) produced this turn, if any
+        "image_output": da_sink["image_output"],
+        "plotly": da_sink["plotly"],
+        "doc_output": da_sink["doc_output"],
+    }
+    chat_agent.state.set("turn_meta", turn_meta)
+    chat_agent._session_manager.sync_agent(chat_agent)
+    return response
 
 
 def get_chat_historie_for_streamlit(params):
-    """
-    This function retrieves chat history stored in a dynamoDB table partitioned by a userID and sorted by a SessionID
-    """
-    if DYNAMODB_TABLE:
-        chat_histories = DYNAMODB.Table(DYNAMODB_TABLE).get_item(Key={"UserId": st.session_state['userid'], "SessionId":params["session_id"]})
-        # st.write(chat_histories)
-        if "Item" in chat_histories:
-            chat_histories = chat_histories['Item']['messages']
-        else:
-            chat_histories = []
-    else:
-        chat_histories = load_chat_local(LOCAL_CHAT_FILE_NAME, params["session_id"])
-
-    # Constructing the desired list of dictionaries
-    formatted_data = []
-    if chat_histories:
-        for entry in chat_histories:
-            image_files = [os.path.basename(x) for x in entry.get('image', [])]
-            doc_files = [os.path.basename(x) for x in entry.get('document', [])]
-            code_script = entry.get('code', "")
-            assistant_attachment = '\n\n'.join(image_files+doc_files)
-            # Get entries but dont show the Function calling unecessary parts in the chat dialogue on streamlit
-            if "tool_result_id" in entry and not entry["tool_result_id"]:
-                formatted_data.append({
-                    "role": "user",
-                    "content": entry["user"],
-                    "thinking":  entry.get('thinking', "")
-                })
-            elif not "tool_result_id" in entry :
-                  formatted_data.append({
-                    "role": "user",
-                    "content": entry["user"],
-                    "thinking":  entry.get('thinking', "")
-                })
-            if "tool_use_id" in entry and not entry["tool_use_id"]:
-                formatted_data.append({
-                    "role": "assistant",
-                    "content": entry["assistant"],
-                    "attachment": assistant_attachment,
-                    "code": code_script,
-                    "thinking":  entry.get('thinking', "")
-                    # "image_output": entry.get('image', []) if entry["tool_result_id"] else []
-                })
-            elif "tool_use_id" not in entry:
-              formatted_data.append({
-                "role": "assistant",
-                "content": entry["assistant"],
-                "attachment": assistant_attachment,
-                "code": code_script,
-                "code-result": entry["user"],
-                "image_output": entry.get('image', []) if "tool_result_id" in entry else [],
-                "plotly": entry.get('plotly', []) if "tool_result_id" in entry else [],
-                "thinking":  entry.get('thinking', "")
-            })
-    else:
-        chat_histories=[]            
-    return formatted_data,chat_histories
-
+    """Reconstruct the display log for a session directly from its Strands session
+    (persisted messages + per-turn metadata in agent.state), for the configured
+    backend (local | s3 | dynamodb | agentcore). No separate display log is written."""
+    return read_display_history(
+        SESSION_STORAGE, params["session_id"],
+        user_id=st.session_state['userid'], bucket=BUCKET, region=REGION,
+        dynamodb_table=DYNAMODB_TABLE, agentcore_memory_id=AGENTCORE_MEMORY_ID,
+    )
 
 
 def get_key_from_value(dictionary, value):
     return next((key for key, val in dictionary.items() if val == value), None)
-    
+
+
+def escape_dollars_outside_code(text: str, replacement: str = "\\$") -> str:
+    """Escape $ signs in markdown, but leave fenced code blocks (``` ... ```) untouched.
+    Issue is that Streamlit struggles to render $ without proper escaping or in (```)
+    encapsulation. The `chat_debrock_` function checks for (```) and renders the content
+    as is, however, there may be $ characters outside the (```) in the message content
+    that needs to be handled seperately"""
+    # Pattern captures fenced code blocks (with optional language hint),
+    # non-greedy so multiple blocks are handled separately.
+    fence_pattern = re.compile(r"(```.*?```)", re.DOTALL)
+
+    parts = fence_pattern.split(text)
+
+    # split() with a capturing group returns alternating segments:
+    # [outside, fenced, outside, fenced, outside, ...]
+    # Even indexes = outside code blocks -> escape them
+    # Odd indexes  = inside code blocks  -> leave as-is
+    for i in range(0, len(parts), 2):
+        if "\\$" not in parts[i]: # Skip if LLM response already escaped "$"
+            parts[i] = parts[i].replace("$", replacement)
+
+    return "".join(parts)
+
 def chat_bedrock_(params):
     st.title('Chatty AI Assitant 🙂')
-    params['chat_histories'] = []
     if params["session_id"].strip():
-        st.session_state.messages, params['chat_histories'] = get_chat_historie_for_streamlit(params)
-    for message in st.session_state.messages:
-
+        st.session_state.messages = get_chat_historie_for_streamlit(params)
+    for x,message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             if "```" in message["content"]:
+                message['content'] = escape_dollars_outside_code(message['content'])
                 st.markdown(message["content"], unsafe_allow_html=True)
             else:
                 st.markdown(message["content"].replace("$", "\\$"), unsafe_allow_html=True)
             if message["role"] == "assistant":
-                if message["plotly"]:
-                    for item in message["plotly"]:
-                        bucket_name, key = item.replace('s3://', '').split('/', 1)
-                        image_bytes = get_object_with_retry(bucket_name, key)
-                        content = image_bytes['Body'].read()
-                        json_data = json.loads(content.decode('utf-8'))
-                        try:
-                            fig = pio.from_json(json.dumps(json_data))
-                        except Exception:
-                            decoded_data = decode_json(json_data)
-                            fig = go.Figure(data=decoded_data['data'], layout=decoded_data['layout'])
-                        st.plotly_chart(fig)
-
-                elif message["image_output"]:
-                    for item in message["image_output"]:
-                        bucket_name, key = item.replace('s3://', '').split('/', 1)
-                        image_bytes = get_object_with_retry(bucket_name, key)
-                        # image_bytes=base64.b64decode(message["image"][image_idx])
-                        image = Image.open(io.BytesIO(image_bytes['Body'].read()))
-                        st.image(image)
+                for item in message["plotly"]:
+                    bucket_name, key = item.replace('s3://', '').split('/', 1)
+                    image_bytes = get_object_with_retry(bucket_name, key)
+                    fig = pio.from_json(image_bytes['Body'].read().decode('utf-8'))
+                    st.plotly_chart(fig)
+                # PNGs that are just static twins of a plotly figure above are skipped
+                # (same basename stem); standalone PNGs (e.g. matplotlib) still render.
+                plotly_stems = {os.path.splitext(os.path.basename(p))[0] for p in message["plotly"]}
+                for item in message["image_output"]:
+                    if os.path.splitext(os.path.basename(item))[0] in plotly_stems:
+                        continue
+                    bucket_name, key = item.replace('s3://', '').split('/', 1)
+                    image_bytes = get_object_with_retry(bucket_name, key)
+                    image = Image.open(io.BytesIO(image_bytes['Body'].read()))
+                    st.image(image)
+                render_artifacts_expander(message.get("doc_output", []))
                 if message["attachment"]:
                     with st.expander(label="**attachments**"):
                         st.markdown(message["attachment"])
@@ -1191,11 +1139,32 @@ def chat_bedrock_(params):
             st.markdown(prompt.replace("$", "\\$"), unsafe_allow_html=True )
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
+            # slot for the transient "Agent workings" panel (fills while a sub-agent
+            # runs, under the answer spinner); must be created on the main thread.
+            workings_slot = st.empty()
             params["question"] = prompt
-            answer = query_llm(params, message_placeholder)
+            answer = query_llm(params, message_placeholder, workings_slot)
             message_placeholder.markdown(answer.replace("$", "\\$"), unsafe_allow_html=True )
             st.session_state.messages.append({"role": "assistant", "content": answer})
+            # This turn consumed the staged attachments (their content is now in the
+            # conversation history) - rotate the widget nonce so the rerun remounts
+            # the upload box / Files picker empty. Only reached on success: a failed
+            # turn leaves the files staged for retry.
+            if params['upload_doc'] or params['s3_objects']:
+                st.session_state['attach_nonce'] += 1
         st.rerun()
+
+def format_chat_session(session_string):
+    # Truncate to first 10 words or 50 chars, whichever comes first
+    words = session_string.split()[:10]
+    truncated = ' '.join(words)
+
+    if len(truncated) > 150:
+        return truncated[:150] + "..."
+    elif len(session_string.split()) > 10:
+        return truncated + "..."
+    else:
+        return truncated
 
 def app_sidebar():
     with st.sidebar:
@@ -1206,7 +1175,6 @@ def app_sidebar():
         model = st.selectbox('**Model**', models)
         if any(keyword in [model] for keyword in HYBRID_MODELS):
             st.session_state['reasoning_mode'] = st.toggle("Reasoning Mode", value=False, key="thinking")
-            st.write(st.session_state['reasoning_mode'])
         else:
             st.session_state['reasoning_mode'] = False
         runtime = ""
@@ -1214,27 +1182,52 @@ def app_sidebar():
         user_sess_id = get_session_ids_by_user(DYNAMODB_TABLE, st.session_state['userid'])
         float_keys = {float(key): value for key, value in user_sess_id.items()}
         sorted_messages = sorted(float_keys.items(), reverse=True)
-        sorted_messages.insert(0, (float(st.session_state['user_sess']), "New Chat"))
         if button:
+            # Fresh session id, clean pane, and REMOUNT the session selectbox under a
+            # new key so it defaults to index 0 ("New Chat"). Merely clearing its
+            # session_state entry is not enough: the browser-side component keeps the
+            # old selection and re-submits it on the next interaction, silently
+            # mapping the new conversation back onto the old session.
             st.session_state['user_sess'] = str(time.time())
-            sorted_messages.insert(0, (float(st.session_state['user_sess']), "New Chat"))
+            st.session_state['chat_list_nonce'] = st.session_state.get('chat_list_nonce', 0) + 1
+            st.session_state['messages'] = []
+        # single "New Chat" entry for the pending session id; once its first message
+        # is sent it appears in storage with a real title, which wins the dict merge
+        sorted_messages.insert(0, (float(st.session_state['user_sess']), "New Chat"))
         st.session_state['chat_session_list'] = dict(sorted_messages)
-        chat_items = st.selectbox("**Chat Sessions**", st.session_state['chat_session_list'].values(), key="chat_sessions")
+        chat_items = st.selectbox(
+                            "**Chat Sessions**",
+                            st.session_state['chat_session_list'].values(),
+                            format_func=format_chat_session,
+                            key=f"chat_sessions_{st.session_state.setdefault('chat_list_nonce', 0)}"
+                        )
+        #st.selectbox("**Chat Sessions**", st.session_state['chat_session_list'].values(), key="chat_sessions")
         session_id = get_key_from_value(st.session_state['chat_session_list'], chat_items)
         if model not in NON_TOOL_SUPPORTING_MODELS:
-            tools = st.multiselect("**Tools**", ["Advanced Data Analytics"],
+            tools = st.multiselect("**Tools**",
+                                   ["Advanced Data Analytics", "Web Search",
+                                    "Research Workers", "Document Generator"],
                                    key="function_collen", default=None)
             if "Advanced Data Analytics" in tools:
                 engines = ["pyspark", "python"]
                 runtime = st.select_slider(
-                                "Runtime", engines, key="enginees"
+                                "Runtime", engines, value="python", key="enginees"
                             )
+        # Attachment widgets are nonce-keyed: after a query consumes attachments, the
+        # nonce increments and the rerun remounts them EMPTY (attachments are per-turn;
+        # the conversation history carries the content for follow-ups, and sub-agents
+        # get still-visible dataset uris via dataset_uris_in_window). Reruns from other
+        # widget changes leave the nonce - and therefore staged files - untouched.
+        nonce = st.session_state.setdefault('attach_nonce', 0)
         bucket_items = list_csv_xlsx_in_s3_folder(INPUT_BUCKET, INPUT_S3_PATH)
-        bucket_objects = st.multiselect("**Files**", bucket_items, key="objector", default=None)
+        bucket_objects = st.multiselect("**Files**", bucket_items,
+                                        key=f"objector_{nonce}", default=None)
         file = st.file_uploader('Upload a document', accept_multiple_files=True,
+                                key=f"upload_doc_{nonce}",
                                 help="pdf,csv,txt,png,jpg,xlsx,json,py doc format supported")
-        if file and LOAD_DOC_IN_ALL_CHAT_CONVO:
-            st.warning('You have set **load-doc-in-chat-history** to true. For better performance, remove uploaded file(s) (by clicking **X**) **AFTER** first query on uploaded files. See the README for more info', icon="⚠️")
+        if file or bucket_objects:
+            st.caption("📎 Attachments are sent with your next question only, then cleared "
+                       "— follow-ups answer from the conversation.")
         params = {"model": model, "session_id": str(session_id),
                   "chat_item": chat_items,
                   "upload_doc": file,

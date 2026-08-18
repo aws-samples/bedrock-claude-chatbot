@@ -1,1 +1,16 @@
-{"sonnet-4": {"input": 0.000003, "output": 0.000015},"opus-4": {"input": 0.000015, "output": 0.000075},"sonnet-3.5-v1": {"input": 0.000003, "output": 0.000015},"sonnet-3.5-v2": {"input": 0.000003, "output": 0.000015},"haiku-3.5": {"input": 0.0000008, "output": 0.000004},"haiku": {"input": 0.00000025, "output": 0.00000125},"sonnet-3.7": {"input": 0.000003, "output": 0.000015},"meta-maverick": {"input": 0.00000024, "output": 0.00000097}, "meta-scout": {"input": 0.00000017, "output": 0.00000066},"nova-lite": {"input": 0.00000006, "output": 0.000000024},"nova-premier": {"input": 0.00000025, "output": 0.00000125},"nova-pro": {"input": 0.00000032, "output": 0.00000006},"deepseek": {"input": 0.000000135, "output": 0.00000054}, "nova-micro": {"input": 0.0000000035, "output": 0.000000014}}
+{
+    "fable-5":    {"input": 0.00001,     "output": 0.00005,    "cache_write": 0.0000125,   "cache_read": 0.000001},
+    "sonnet-5":   {"input": 0.000002,    "output": 0.00001,    "cache_write": 0.0000025,   "cache_read": 0.0000002},
+    "opus-4.8":   {"input": 0.000005,    "output": 0.000025,   "cache_write": 0.00000625,  "cache_read": 0.0000005},
+    "opus-5":     {"input": 0.000005,    "output": 0.000025,   "cache_write": 0.00000625,  "cache_read": 0.0000005},
+    "sonnet-4.6": {"input": 0.000003,    "output": 0.000015,   "cache_write": 0.00000375,  "cache_read": 0.0000003},
+    "haiku-4.5":  {"input": 0.000001,    "output": 0.000005,   "cache_write": 0.00000125,  "cache_read": 0.0000001},
+    "deepseek-3.2": {"input": 0.00000062, "output": 0.00000185},
+    "kimi-2.5":   {"input": 0.0000006,   "output": 0.000003},
+    "gpt-sol":    {"input": 0.0000055,   "output": 0.000033,   "cache_write": 0.000006875, "cache_read": 0.00000055},
+    "gpt-terra":  {"input": 0.0000022,   "output": 0.0000132,  "cache_write": 0.00000275,  "cache_read": 0.00000022},
+    "gpt-luna":   {"input": 0.00000022,  "output": 0.00000132, "cache_write": 0.000000275, "cache_read": 0.000000022},
+    "gemma4-31b": {"input": 0.00000014,  "output": 0.0000004},
+    "glm-5":      {"input": 0.000001,    "output": 0.0000032},
+    "gemma4-26b": {"input": 0.00000013,  "output": 0.0000004}
+}
