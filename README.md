@@ -2,6 +2,8 @@
 
 An agentic Streamlit chatbot for Amazon Bedrock, built on the [Strands Agents](https://strandsagents.com) framework. A persisted orchestrator agent answers conversationally and delegates to specialized sub-agents and tools — sandboxed data analysis, document generation/editing, parallel web-research workers, and web search — with durable sessions and optional cross-session long-term memory via Amazon Bedrock AgentCore Memory.
 
+> **Note:** This sample application is for POC purpose ONLY.
+
 <img src="images/chatbot-arch.png" width="1000"/>
 
 READ THE FOLLOWING **PREREQUISITES** CAREFULLY.
