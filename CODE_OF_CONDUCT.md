@@ -1,10 +1,4 @@
-## ✅ Final Recommendations Table
-
-| Approach | Works in Managed Containers | Real-Time Metrics | Code Changes Required | Infra Setup Required | Latency Impact | Cost | Long-Term Fit | Verdict |
-|---|---|---|---|---|---|---|---|---|
-| **`aws-embedded-metrics` (stdout/EMF mode)** | ✅ Yes | ✅ Yes | ✅ Minimal — add library + `AWS_EMF_AGENT_ENDPOINT=stdout` | ❌ None | 🟢 Near-zero (async via logs) | 💲 Log ingestion only, no `PutMetricData` charges | ✅ Portable to BYO containers too | ⭐ **Best short-term bet** |
-| **`boto3` `put_metric_data`** | ✅ Yes | ✅ Yes | ✅ Minimal — a few lines | ❌ None | 🔴 Adds synchronous API call per invocation (throttle risk at high TPS) | 💲💲 Per-API-call charges | ⚠️ Works but doesn't scale well | ✅ Simple, good for low-TPS endpoints |
-| **CloudWatch Metric Filters on stdout** | ✅ Yes | ✅ Yes | ✅ Minimal — just a structured `print()` | ⚠️ Yes — must create Metric Filter on log group (IaC/console) | 🟢 Near-zero (async via logs) | 💲 Log ingestion only | ⚠️ Limited pattern syntax, no full regex | ⚠️ Viable but brittle for complex values |
-| **SageMaker Enhanced Endpoint Metrics** | ✅ Yes (flag only) | ✅ Yes | ❌ Zero | ❌ None — just a config flag | 🟢 None | 💲 CW metric charges | ✅ Good complement | ⚠️ Infrastructure metrics only — not custom app metrics like sequence length |
-| **SageMaker Data Capture + Model Monitor** | ✅ Yes | ❌ No — S3 batch, not real-time | ⚠️ Some — enable `DataCaptureConfig` | ⚠️ Yes — S3, monitoring schedule | 🟢 None | 💲💲 S3 + processing jobs | ✅ Good for drift/quality monitoring | ❌ Wrong tool for real-time sequence length metric |
-| **Datadog Agent (BYO Container)** | ❌ Not in managed containers | ✅ Yes | ⚠️ Medium — DogStatsD client calls | ⚠️ Yes — custom container + Datadog agent | 🟢 Near-zero (UDP/DogStatsD) | 💲💲 Datadog costs | ✅ **Best long-term solution** | 🔮 Right answer once on BYO containers |
+## Code of Conduct
+This project has adopted the [Amazon Open Source Code of Conduct](https://aws.github.io/code-of-conduct).
+For more information see the [Code of Conduct FAQ](https://aws.github.io/code-of-conduct-faq) or contact
+opensource-codeofconduct@amazon.com with any additional questions or comments.
